@@ -1,0 +1,28 @@
+{
+  "name": "@review-os/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "prsm": "./dist/index.js",
+    "review-pr": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prsm": "node dist/index.js",
+    "review-pr": "node dist/index.js"
+  },
+  "dependencies": {
+    "@review-os/core": "workspace:*",
+    "@review-os/git": "workspace:*",
+    "@review-os/github": "workspace:*",
+    "@review-os/providers": "workspace:*",
+    "@review-os/render": "workspace:*",
+    "@review-os/schemas": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.2"
+  }
+}

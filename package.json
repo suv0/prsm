@@ -1,0 +1,20 @@
+{
+  "name": "prsm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PRism — see every angle before you merge. Local multi-agent PR review.",
+  "type": "module",
+  "packageManager": "pnpm@11.10.0",
+  "license": "MIT",
+  "scripts": {
+    "build": "pnpm --filter @review-os/schemas build && pnpm --filter @review-os/github build && pnpm --filter @review-os/git build && pnpm --filter @review-os/core build && pnpm --filter @review-os/providers build && pnpm --filter @review-os/render build && pnpm --filter @review-os/cli build",
+    "demo": "node apps/cli/dist/index.js --demo",
+    "prsm": "node apps/cli/dist/index.js",
+    "review-pr": "node apps/cli/dist/index.js",
+    "test": "node --test tests/**/*.test.mjs",
+    "typecheck": "pnpm -r run typecheck"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,33 @@
+outputDir: reviews
+confidenceFloor: 0.8
+parallelism: 2
+harshness: high
+
+providers:
+  # Default for --demo. Real runs use chat skill or --provider/--run.
+  default: demo
+  anthropic:
+    model: claude-sonnet-4-20250514
+    maxTokens: 8192
+  openai:
+    model: gpt-4.1
+    maxTokens: 8192
+    baseUrl: https://api.openai.com/v1
+  # CLI agent runtimes (no API key in review-os itself):
+  # cursor | claude-code | command-code
+
+passes:
+  - id: correctness
+    enabled: true
+    provider: demo
+  - id: nitpick
+    enabled: true
+    provider: demo
+  - id: devils-advocate
+    enabled: true
+    provider: demo
+
+publish:
+  includeNits: true
+  includePraise: true
+  includeQuestions: true

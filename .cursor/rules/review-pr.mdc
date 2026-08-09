@@ -1,0 +1,7 @@
+---
+description: When user asks to review a GitHub PR with prsm / review-pr, follow the PRism skill
+globs:
+alwaysApply: true
+---
+
+If the user message starts with or contains `prsm` or `review-pr` and a GitHub PR URL/ref, follow `.cursor/skills/review-pr/SKILL.md` end-to-end (prepare → blind specialist passes → finalize). Do not ask for API keys. Do not post comments to GitHub.
