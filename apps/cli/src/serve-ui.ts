@@ -12,6 +12,7 @@ import {
   runAllCliAgents,
   type AgentRunResult,
 } from "./run-provider.js";
+import { detectAgentStatuses } from "./agent-catalog.js";
 
 export type ServeUiOptions = {
   repoRoot: string;
@@ -172,24 +173,73 @@ function homePage(port: number): string {
     }
     button.btn-secondary:hover { background: #3a3a3a; }
     #providers { color: var(--muted); font-size: 0.88rem; margin-bottom: 1rem; }
+    .connect-head {
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+      gap: 0.75rem; margin-bottom: 0.85rem;
+    }
+    .connect-head h2 { margin: 0; font-size: 1.05rem; color: #fff; font-weight: 600; }
+    .pill {
+      display: inline-block; font-size: 0.75rem; font-weight: 600;
+      padding: 0.15rem 0.5rem; border-radius: 999px; border: 1px solid var(--line);
+    }
+    .pill.ok { color: #89d185; border-color: #3d7a45; background: #1f2a1f; }
+    .pill.bad { color: #f14c4c; border-color: #8b2e2e; background: #2a1818; }
+    .pill.warn { color: var(--warn); border-color: #6e6a3a; background: #2a2818; }
+    .agent-grid { display: grid; gap: 0.75rem; }
+    @media (min-width: 640px) { .agent-grid { grid-template-columns: 1fr 1fr 1fr; } }
+    .agent-card {
+      border: 1px solid var(--line); border-radius: 8px; padding: 0.85rem 0.9rem;
+      background: #1e1e1e; display: flex; flex-direction: column; gap: 0.45rem;
+    }
+    .agent-card.ready { border-color: #3d7a45; }
+    .agent-card h3 { margin: 0; font-size: 0.95rem; color: #fff; }
+    .agent-card p { margin: 0; font-size: 0.82rem; color: var(--muted); }
+    .agent-card .cmd {
+      font: 0.78rem Consolas, "Cascadia Code", ui-monospace, monospace;
+      color: #9cdcfe;
+    }
+    .agent-card ol { margin: 0.25rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.78rem; }
+    .agent-card .row { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.35rem; }
+    .agent-card a.btn-link {
+      display: inline-block; font-size: 0.78rem; font-weight: 600;
+      color: var(--accent); text-decoration: none; border: 1px solid var(--line);
+      border-radius: 4px; padding: 0.25rem 0.5rem; background: #2d2d2d;
+    }
+    .agent-card a.btn-link:hover { border-color: var(--accent); }
+    #connect-banner {
+      margin: 0 0 0.75rem; padding: 0.65rem 0.75rem; border-radius: 6px;
+      font-size: 0.88rem; border: 1px solid var(--line);
+    }
+    #connect-banner.need { background: #2a1818; border-color: #8b2e2e; color: #f0c0c0; }
+    #connect-banner.ready { background: #1f2a1f; border-color: #3d7a45; color: #c5e8c3; }
+    #form.is-blocked { opacity: 0.55; pointer-events: none; }
   </style>
 </head>
 <body>
   <main>
     <h1>PRism</h1>
-    <p class="lede">See every angle before you merge. Paste a GitHub PR URL. Submit runs Cursor, Claude Code, and Command Code (each available locally), then merges into one review.</p>
-    <p id="providers">Checking providers…</p>
+    <p class="lede">See every angle before you merge. Connect a local AI agent, paste a GitHub PR URL, then run the review.</p>
+
+    <section class="card" id="connect">
+      <div class="connect-head">
+        <h2>Connect agents</h2>
+        <div>
+          <span class="pill warn" id="connect-pill">Checking…</span>
+          <button type="button" class="btn-secondary" id="btn-recheck" style="margin-left:0.5rem">Re-check</button>
+        </div>
+      </div>
+      <p id="connect-banner" class="need">Looking for local agent CLIs…</p>
+      <div class="agent-grid" id="agent-grid"></div>
+      <p class="hint" style="margin-bottom:0">PRism talks to CLIs on your machine — no PRism cloud account. Install any one agent to start; more agents = more perspectives.</p>
+    </section>
 
     <form class="card" id="form">
       <label for="pr">Pull request URL</label>
       <input id="pr" name="pr" type="url" required placeholder="https://github.com/org/repo/pull/123" autocomplete="off" />
-      <div class="agents" id="agent-checks">
-        <label><input type="checkbox" name="agent" value="cursor" checked /> cursor</label>
-        <label><input type="checkbox" name="agent" value="claude-code" checked /> claude-code</label>
-        <label><input type="checkbox" name="agent" value="command-code" checked /> command-code</label>
-      </div>
+      <label style="margin-top:0.9rem">Use these agents</label>
+      <div class="agents" id="agent-checks"></div>
       <button type="submit" id="submit">Run review</button>
-      <p class="hint">Agents run one after another (~3–6 min per specialist pass). Live CLI output and heartbeats appear in the log while a pass is running. If a run is already active, this page attaches automatically.</p>
+      <p class="hint">Agents run one after another (~3–6 min per specialist pass). Live CLI output and heartbeats appear in the log while a pass is running.</p>
     </form>
 
     <section class="card" id="job-panel" hidden>
@@ -217,29 +267,122 @@ function homePage(port: number): string {
   const providersEl = document.getElementById("providers");
   const stopBtn = document.getElementById("btn-stop");
   const restartBtn = document.getElementById("btn-restart");
+  const agentGrid = document.getElementById("agent-grid");
+  const agentChecks = document.getElementById("agent-checks");
+  const connectPill = document.getElementById("connect-pill");
+  const connectBanner = document.getElementById("connect-banner");
+  const recheckBtn = document.getElementById("btn-recheck");
   let pollTimer = 0;
   let jobId = "";
   let lastPrRef = "";
   let lastAgents = [];
+  let readyIds = [];
+
+  function setFormBlocked(blocked, message) {
+    form.classList.toggle("is-blocked", Boolean(blocked));
+    submit.disabled = Boolean(blocked);
+    if (blocked) submit.textContent = message || "Connect an agent first";
+    else if (!pollTimer) submit.textContent = "Run review";
+  }
+
+  function renderConnect(body) {
+    const agents = Array.isArray(body.agents) ? body.agents : [];
+    readyIds = Array.isArray(body.readyIds) ? body.readyIds.slice() : [];
+    const readyCount = Number(body.readyCount || readyIds.length || 0);
+
+    if (connectPill) {
+      connectPill.textContent = readyCount
+        ? (readyCount + " agent" + (readyCount === 1 ? "" : "s") + " ready")
+        : "No agents found";
+      connectPill.className = "pill " + (readyCount ? "ok" : "bad");
+    }
+    if (connectBanner) {
+      connectBanner.className = readyCount ? "ready" : "need";
+      connectBanner.textContent = readyCount
+        ? "Ready to review. Pick which agents to run below — or install more for broader coverage."
+        : "No local agent CLI found yet. Install one below, finish login, then hit Re-check.";
+    }
+
+    if (agentGrid) {
+      agentGrid.innerHTML = "";
+      agents.forEach(function (agent) {
+        const card = document.createElement("article");
+        card.className = "agent-card" + (agent.available ? " ready" : "");
+        const title = document.createElement("h3");
+        title.textContent = agent.name;
+        const status = document.createElement("span");
+        status.className = "pill " + (agent.available ? "ok" : "bad");
+        status.textContent = agent.available ? "Detected" : "Not found";
+        title.appendChild(document.createTextNode(" "));
+        title.appendChild(status);
+        const summary = document.createElement("p");
+        summary.textContent = agent.summary || "";
+        const cmd = document.createElement("div");
+        cmd.className = "cmd";
+        cmd.textContent = "CLI: " + agent.command;
+        card.appendChild(title);
+        card.appendChild(summary);
+        card.appendChild(cmd);
+        if (!agent.available && Array.isArray(agent.setupSteps)) {
+          const ol = document.createElement("ol");
+          agent.setupSteps.forEach(function (step) {
+            const li = document.createElement("li");
+            li.textContent = step;
+            ol.appendChild(li);
+          });
+          card.appendChild(ol);
+        } else if (agent.available && agent.loginHint) {
+          const tip = document.createElement("p");
+          tip.textContent = "If runs fail auth: " + agent.loginHint;
+          card.appendChild(tip);
+        }
+        const row = document.createElement("div");
+        row.className = "row";
+        if (agent.installUrl) {
+          const a = document.createElement("a");
+          a.className = "btn-link";
+          a.href = agent.installUrl;
+          a.target = "_blank";
+          a.rel = "noopener";
+          a.textContent = agent.available ? "Docs" : "Install guide";
+          row.appendChild(a);
+        }
+        card.appendChild(row);
+        agentGrid.appendChild(card);
+      });
+    }
+
+    if (agentChecks) {
+      agentChecks.innerHTML = "";
+      agents.forEach(function (agent) {
+        const label = document.createElement("label");
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.name = "agent";
+        box.value = agent.id;
+        box.checked = Boolean(agent.available);
+        box.disabled = !agent.available;
+        label.style.opacity = agent.available ? "1" : "0.5";
+        label.appendChild(box);
+        label.appendChild(document.createTextNode(" " + agent.id));
+        agentChecks.appendChild(label);
+      });
+    }
+
+    setFormBlocked(readyCount === 0);
+  }
 
   async function loadProviders() {
     try {
       const res = await fetch("/api/providers");
       const body = await res.json();
-      const list = Array.isArray(body.providers) ? body.providers : [];
-      providersEl.textContent = list.length
-        ? ("Available locally: " + list.join(", "))
-        : "No local providers detected (install agent / claude / command-code).";
-      document.querySelectorAll('input[name="agent"]').forEach(function (box) {
-        if (!(box instanceof HTMLInputElement)) return;
-        if (list.indexOf(box.value) === -1) {
-          box.checked = false;
-          box.disabled = true;
-          box.parentElement && (box.parentElement.style.opacity = "0.5");
-        }
-      });
+      renderConnect(body);
     } catch (e) {
-      providersEl.textContent = "Could not load providers.";
+      if (connectBanner) {
+        connectBanner.className = "need";
+        connectBanner.textContent = "Could not check agents. Is serve-ui still running?";
+      }
+      setFormBlocked(true, "Agents unavailable");
     }
   }
 
@@ -451,6 +594,17 @@ function homePage(port: number): string {
     }
   });
 
+  if (recheckBtn) {
+    recheckBtn.addEventListener("click", function () {
+      recheckBtn.disabled = true;
+      recheckBtn.textContent = "Checking…";
+      loadProviders().finally(function () {
+        recheckBtn.disabled = false;
+        recheckBtn.textContent = "Re-check";
+      });
+    });
+  }
+
   loadProviders();
   attachActive();
 })();
@@ -478,12 +632,14 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
       }
 
       if (method === "GET" && url.pathname === "/api/providers") {
+        const detected = await detectAgentStatuses();
         const registry = createProviderRegistry();
         const available = await listAvailableProviders(registry);
         json(res, 200, {
-          providers: available.filter((id) =>
-            (DEFAULT_MULTI_AGENTS as readonly string[]).includes(id),
-          ),
+          providers: detected.readyIds,
+          readyIds: detected.readyIds,
+          readyCount: detected.readyCount,
+          agents: detected.agents,
           all: available,
           defaults: [...DEFAULT_MULTI_AGENTS],
         });

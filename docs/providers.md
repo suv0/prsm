@@ -21,7 +21,16 @@ All providers implement the same `Provider.complete()` contract.
 pnpm prsm --list-providers
 ```
 
-## Auth checklist
+## First-time connect
+
+New clones often have zero AI CLIs. Use:
+
+```bash
+pnpm prsm --doctor
+pnpm prsm --serve-ui
+```
+
+The UI **Connect agents** panel detects what’s installed, links to install docs, and unlocks **Run review** once at least one agent is ready.
 
 Before first run:
 

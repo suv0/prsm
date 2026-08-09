@@ -109,7 +109,19 @@ pnpm demo
 
 ---
 
-## Providers
+## Connect an agent (first-time setup)
+
+PRism does **not** ship an AI model. It drives CLIs already on your machine.
+
+1. Run `pnpm prsm --doctor` — see what’s missing  
+2. Or open `pnpm prsm --serve-ui` → **Connect agents** panel  
+3. Install **any one** of: Cursor Agent (`agent`), Claude Code (`claude`), Command Code (`command-code`)  
+4. Finish that product’s login  
+5. Hit **Re-check** in the UI (or re-run `--doctor`)
+
+You only need **one** agent to review. Extra agents add more perspectives (runs take longer).
+
+---
 
 | Id | CLI | Auth (outside PRism) |
 |---|---|---|
