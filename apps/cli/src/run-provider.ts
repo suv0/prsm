@@ -15,11 +15,11 @@ import {
   defaultPasses,
   generatePrOverview,
   listAvailableProviders,
-  type ProviderId,
 } from "@review-os/providers";
 import type { PrOverview } from "@review-os/schemas";
 import { writeReviewArtifacts } from "@review-os/render";
 import type { AppConfig } from "@review-os/schemas";
+import { loadCustomAgents } from "./custom-agents.js";
 
 export const LIVE_PASSES = new Set(["correctness", "nitpick", "devils-advocate"]);
 
@@ -47,18 +47,26 @@ async function resolveExtraInstructions(
   }
 }
 
-export const CLI_PROVIDERS = new Set([
-  "cursor",
-  "claude-code",
-  "command-code",
-  "anthropic",
-]);
-
 export const DEFAULT_MULTI_AGENTS = [
   "cursor",
   "claude-code",
   "command-code",
 ] as const;
+
+function isRunnableReviewAgent(
+  id: string,
+  registry: Map<string, Provider>,
+): boolean {
+  if (id === "demo") return false;
+  return registry.has(id);
+}
+
+function isParallelCliAgent(
+  id: string,
+  registry: Map<string, Provider>,
+): boolean {
+  return isRunnableReviewAgent(id, registry) && id !== "anthropic";
+}
 
 export type LogFn = (line: string) => void;
 
@@ -115,9 +123,12 @@ export async function runWithProvider(options: {
   overview?: PrOverview;
 }> {
   const log = options.log ?? ((line: string) => console.log(line));
-  if (!CLI_PROVIDERS.has(options.providerId)) {
+  if (!isRunnableReviewAgent(options.providerId, options.providers)) {
+    const known = [...options.providers.keys()]
+      .filter((id) => id !== "demo")
+      .join(" | ");
     throw new Error(
-      `Unknown provider "${options.providerId}". Use: cursor | claude-code | command-code | anthropic`,
+      `Unknown provider "${options.providerId}". Use: ${known || "cursor | claude-code | command-code"}`,
     );
   }
 
@@ -175,6 +186,7 @@ export async function runWithProvider(options: {
         files: pr.files.map((file) => file.path),
         diff: pr.diff,
         log,
+        extraCliSpecs: await loadCustomAgents(),
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -297,7 +309,8 @@ export async function runAllCliAgents(options: {
   cancelled: boolean;
 }> {
   const log = options.log ?? ((line: string) => console.log(line));
-  const providers = createProviderRegistry();
+  const extras = await loadCustomAgents();
+  const providers = createProviderRegistry(extras);
   const available = new Set(await listAvailableProviders(providers));
   const agents = options.agents?.length
     ? options.agents
@@ -340,12 +353,7 @@ export async function runAllCliAgents(options: {
     log(`PR prefetch failed (${detail}); each agent will fetch separately.`);
   }
 
-  const overviewProvider = agents.find(
-    (agent) =>
-      CLI_PROVIDERS.has(agent) &&
-      agent !== "anthropic" &&
-      (available.has(agent as ProviderId) || available.has(agent)),
-  );
+  const overviewProvider = agents.find((agent) => available.has(agent));
   if (sharedPr && overviewProvider && outputDir) {
     try {
       sharedOverview = await generatePrOverview({
@@ -360,6 +368,7 @@ export async function runAllCliAgents(options: {
         files: sharedPr.files.map((file) => file.path),
         diff: sharedPr.diff,
         log,
+        extraCliSpecs: extras,
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -375,15 +384,15 @@ export async function runAllCliAgents(options: {
 
   const runnable: string[] = [];
   for (const agent of agents) {
-    if (!CLI_PROVIDERS.has(agent) || agent === "anthropic") {
+    if (!isParallelCliAgent(agent, providers)) {
       results.push({
         agent,
         status: "skipped",
-        detail: "Not a default local CLI agent",
+        detail: "Not a local CLI agent",
       });
       continue;
     }
-    if (!available.has(agent as ProviderId) && !available.has(agent)) {
+    if (!available.has(agent)) {
       results.push({
         agent,
         status: "skipped",

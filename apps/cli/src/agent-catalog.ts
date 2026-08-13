@@ -1,15 +1,16 @@
 import { commandExists } from "@review-os/providers";
-import { DEFAULT_MULTI_AGENTS } from "./run-provider.js";
+import { loadCustomAgents } from "./custom-agents.js";
 
 export type AgentCatalogEntry = {
-  id: (typeof DEFAULT_MULTI_AGENTS)[number];
+  id: string;
   name: string;
   command: string;
   summary: string;
-  installUrl: string;
+  installUrl?: string;
   docsUrl?: string;
   setupSteps: string[];
   loginHint: string;
+  custom?: boolean;
 };
 
 /** First-party agents PRism knows how to detect and guide users through. */
@@ -69,6 +70,29 @@ export async function detectAgentStatuses(): Promise<{
   for (const entry of AGENT_CATALOG) {
     const available = await commandExists(entry.command);
     agents.push({ ...entry, available });
+  }
+  const customs = await loadCustomAgents();
+  for (const custom of customs) {
+    const available = await commandExists(custom.command);
+    const extra =
+      custom.extraArgs.length > 0 ? ` ${custom.extraArgs.join(" ")}` : "";
+    const promptHint =
+      custom.promptStyle === "trailing" ? "prompt as last arg" : "-p <prompt>";
+    agents.push({
+      id: custom.id,
+      name: custom.name,
+      command: custom.command,
+      summary: `Your CLI (${promptHint}${extra ? `; extra:${extra}` : ""}). Saved on this machine.`,
+      setupSteps: available
+        ? []
+        : [
+            `Put “${custom.command}” on your PATH (or re-add with a full path)`,
+            "Hit Re-check",
+          ],
+      loginHint: "Log in however that CLI expects",
+      custom: true,
+      available,
+    });
   }
   const readyIds = agents.filter((a) => a.available).map((a) => a.id);
   return {

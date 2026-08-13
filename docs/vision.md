@@ -10,7 +10,16 @@ Design → Architecture review → Implementation → PR review → Security →
 
 ## Product promise
 
-You run:
+Preferred:
+
+```bash
+pnpm install
+pnpm prsm
+```
+
+Hub at http://127.0.0.1:8788/ — Connect GitHub, add an agent, paste a PR URL.
+
+Or from chat in this repo:
 
 ```bash
 prsm https://github.com/org/repo/pull/1
@@ -22,6 +31,6 @@ You get:
 reviews/1/final-review.md
 ```
 
-Harsh analysis. Polite paste-ready comments. No auto-posting to GitHub.
+Harsh analysis. Polite paste-ready comments. No auto-posting to GitHub. Desktop OS only (Windows / macOS / Linux).
 
 Internal monorepo packages still use the `@review-os/*` codename.

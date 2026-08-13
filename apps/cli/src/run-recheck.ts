@@ -13,53 +13,21 @@ import {
   type ReverifyApplyResult,
 } from "@review-os/core";
 import {
+  cliInvocation,
   createCliLogBridge,
   execCli,
 } from "@review-os/providers";
 import type { Finding, ReviewRun } from "@review-os/schemas";
+import { loadCustomAgents } from "./custom-agents.js";
 
 export type LogFn = (line: string) => void;
 
-function cliForProvider(providerId: string): {
+async function cliForProvider(providerId: string): Promise<{
   command: string;
   args: (instruction: string, cwd: string) => string[];
-} {
-  switch (providerId) {
-    case "cursor":
-      return {
-        command: "agent",
-        args: (instruction, cwd) => [
-          "-p",
-          instruction,
-          "--output-format",
-          "text",
-          "--mode",
-          "ask",
-          "--trust",
-          "--workspace",
-          cwd,
-        ],
-      };
-    case "claude-code":
-      return {
-        command: "claude",
-        args: (instruction) => ["-p", instruction, "--output-format", "text"],
-      };
-    case "command-code":
-      return {
-        command: "command-code",
-        args: (instruction) => [
-          "-p",
-          instruction,
-          "--skip-onboarding",
-          "--no-session",
-          "--output-format",
-          "text",
-        ],
-      };
-    default:
-      throw new Error(`Recheck does not support provider "${providerId}"`);
-  }
+}> {
+  const extras = await loadCustomAgents();
+  return cliInvocation(providerId, extras);
 }
 
 export async function runRecheckFinding(options: {
@@ -105,7 +73,7 @@ export async function runRecheckFinding(options: {
     "Do not modify repository files.",
   ].join(" ");
 
-  const { command, args } = cliForProvider(providerId);
+  const { command, args } = await cliForProvider(providerId);
   const result = await execCli(command, args(instruction, repoRoot), {
     cwd: repoRoot,
     timeoutMs: 10 * 60 * 1000,

@@ -1,0 +1,19 @@
+---
+description: Keep README and docs in sync with every user-facing change
+alwaysApply: true
+---
+
+# Sync docs with every change
+
+When you change product behavior (CLI flags, hub UI, GitHub auth, agents, clone-and-go, triage), update the same-PR docs in the same turn. Do not leave README/docs describing the old path.
+
+Always check:
+
+- `README.md` — clone steps, requirements, hub, commands, troubleshooting
+- `docs/providers.md` — how agents and GitHub access work
+- `docs/pipeline.md` — if the review flow changed
+- `AGENTS.md` and `CLAUDE.md` — agent-facing how-to
+- `.cursor/skills/review-pr/SKILL.md` — if the chat/hub workflow changed
+- `CONTRIBUTING.md` — only if contributor commands changed
+
+Match the product: `pnpm prsm` starts the hub; public PRs need no `gh`; private repos use hub **Connect GitHub**; agents are added from the hub. Do not document a required `gh auth login` or `pnpm build` before first hub start unless that is actually true again.

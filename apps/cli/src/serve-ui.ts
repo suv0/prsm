@@ -1,12 +1,18 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import type { AppConfig } from "@review-os/schemas";
 import {
-  createProviderRegistry,
   killActiveCliChildren,
   listAvailableProviders,
 } from "@review-os/providers";
+import {
+  clearGithubToken,
+  fetchUserLogin,
+  probeGithubAccess,
+  saveGithubToken,
+} from "@review-os/github";
 import { renderReviewFromDir } from "@review-os/render";
 import {
   DEFAULT_MULTI_AGENTS,
@@ -14,6 +20,8 @@ import {
   type AgentRunResult,
 } from "./run-provider.js";
 import { detectAgentStatuses } from "./agent-catalog.js";
+import { addCustomAgent, removeCustomAgent } from "./custom-agents.js";
+import { createLiveRegistry } from "./live-registry.js";
 import {
   deleteReviewDir,
   listReviewSummaries,
@@ -115,6 +123,38 @@ function json(res: http.ServerResponse, status: number, body: unknown): void {
     "cache-control": "no-store",
   });
   res.end(JSON.stringify(body));
+}
+
+async function providersPayload(): Promise<Record<string, unknown>> {
+  const detected = await detectAgentStatuses();
+  const { providers } = await createLiveRegistry();
+  const available = await listAvailableProviders(providers);
+  return {
+    providers: detected.readyIds,
+    readyIds: detected.readyIds,
+    readyCount: detected.readyCount,
+    agents: detected.agents,
+    all: available,
+    defaults: [...DEFAULT_MULTI_AGENTS],
+  };
+}
+
+function openBrowser(url: string): void {
+  try {
+    const command =
+      process.platform === "win32"
+        ? spawn("cmd", ["/c", "start", "", url], {
+            stdio: "ignore",
+            windowsHide: true,
+            detached: true,
+          })
+        : process.platform === "darwin"
+          ? spawn("open", [url], { stdio: "ignore", detached: true })
+          : spawn("xdg-open", [url], { stdio: "ignore", detached: true });
+    command.unref();
+  } catch {
+    // hub still works; user can paste the URL
+  }
 }
 
 async function readBody(req: http.IncomingMessage): Promise<string> {
@@ -376,7 +416,7 @@ function homePage(port: number): string {
     .pill.bad { color: #f14c4c; border-color: #8b2e2e; background: #2a1818; }
     .pill.warn { color: var(--warn); border-color: #6e6a3a; background: #2a2818; }
     .agent-grid { display: grid; gap: 0.75rem; }
-    @media (min-width: 640px) { .agent-grid { grid-template-columns: 1fr 1fr 1fr; } }
+    @media (min-width: 640px) { .agent-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); } }
     .agent-card {
       border: 1px solid var(--line); border-radius: 8px; padding: 0.85rem 0.9rem;
       background: #1e1e1e; display: flex; flex-direction: column; gap: 0.45rem;
@@ -396,6 +436,45 @@ function homePage(port: number): string {
       border-radius: 4px; padding: 0.25rem 0.5rem; background: #2d2d2d;
     }
     .agent-card a.btn-link:hover { border-color: var(--accent); }
+    .agent-card button.btn-remove {
+      display: inline-block; font-size: 0.78rem; font-weight: 600;
+      color: #f14c4c; border: 1px solid #8b2e2e; background: #2a1818;
+      border-radius: 4px; padding: 0.25rem 0.5rem;
+    }
+    .add-agent {
+      margin: 0.9rem 0 0; border: 1px dashed var(--line); border-radius: 8px;
+      padding: 0.65rem 0.85rem; background: #1e1e1e;
+    }
+    .add-agent summary {
+      cursor: pointer; color: #fff; font-weight: 600; font-size: 0.92rem;
+    }
+    .add-agent .fields {
+      display: grid; gap: 0.55rem; margin-top: 0.75rem;
+    }
+    @media (min-width: 640px) {
+      .add-agent .fields { grid-template-columns: 1fr 1fr; }
+      .add-agent .fields .span-2 { grid-column: 1 / -1; }
+    }
+    .add-agent label { margin: 0; }
+    .add-agent input[type="text"] { width: 100%; }
+    .add-agent .check { display: flex; align-items: center; gap: 0.45rem; font-size: 0.85rem; color: var(--ink); }
+    #add-agent-msg { margin: 0.5rem 0 0; min-height: 1.1em; }
+    #add-agent-msg.err { color: var(--bad); }
+    #add-agent-msg.ok { color: #89d185; }
+    #github-banner {
+      margin: 0 0 0.65rem; padding: 0.65rem 0.75rem; border-radius: 6px;
+      font-size: 0.88rem; border: 1px solid var(--line);
+    }
+    #github-banner.need { background: #2a1818; border-color: #8b2e2e; color: #f0c0c0; }
+    #github-banner.ready { background: #1f2a1f; border-color: #3d7a45; color: #c5e8c3; }
+    #github-banner.warn { background: #2a2818; border-color: #6e6a3a; color: var(--warn); }
+    .github-fields { display: grid; gap: 0.5rem; margin-top: 0.55rem; }
+    @media (min-width: 640px) {
+      .github-fields { grid-template-columns: 1fr auto auto; align-items: end; }
+    }
+    #github-msg { margin: 0.45rem 0 0; min-height: 1.1em; }
+    #github-msg.err { color: var(--bad); }
+    #github-msg.ok { color: #89d185; }
     #connect-banner {
       margin: 0 0 0.75rem; padding: 0.65rem 0.75rem; border-radius: 6px;
       font-size: 0.88rem; border: 1px solid var(--line);
@@ -442,7 +521,7 @@ function homePage(port: number): string {
 <body>
   <main>
     <h1>PRism</h1>
-    <p class="lede">See every angle before you merge. Your local reviews stay listed here — jump between PRs, verify author updates, or start a new one.</p>
+    <p class="lede">Clone, <code>pnpm prsm</code>, review. Public PRs need no GitHub CLI. Add any AI agent from this page.</p>
 
     <section class="card" id="reviews-card">
       <div class="reviews-head">
@@ -453,7 +532,28 @@ function homePage(port: number): string {
       <ul class="review-list" id="review-list"></ul>
     </section>
 
-    <section class="card" id="connect">      <div class="connect-head">
+    <section class="card" id="github-connect">
+      <div class="connect-head">
+        <h2>Connect GitHub</h2>
+        <span class="pill warn" id="github-pill">Checking…</span>
+      </div>
+      <p id="github-banner" class="need">Checking GitHub access…</p>
+      <p class="hint">Public pull requests work with no login. Private repos need a token (saved in ~/.prsm, not git) or the GitHub CLI.</p>
+      <form id="github-form" class="github-fields">
+        <label>Personal access token
+          <input id="github-token" type="password" name="token" autocomplete="off" placeholder="ghp_… or github_pat_…" />
+        </label>
+        <button type="submit" class="btn-secondary" id="btn-github-save">Save token</button>
+        <button type="button" class="btn-secondary" id="btn-github-clear" hidden>Disconnect</button>
+      </form>
+      <p class="hint" style="margin:0.45rem 0 0">Create a token with repo read access:
+        <a href="https://github.com/settings/tokens/new?description=PRism&amp;scopes=repo" target="_blank" rel="noopener">github.com/settings/tokens/new</a>
+      </p>
+      <p id="github-msg" class="hint"></p>
+    </section>
+
+    <section class="card" id="connect">
+      <div class="connect-head">
         <h2>Connect agents</h2>
         <div>
           <span class="pill warn" id="connect-pill">Checking…</span>
@@ -462,7 +562,30 @@ function homePage(port: number): string {
       </div>
       <p id="connect-banner" class="need">Looking for local agent CLIs…</p>
       <div class="agent-grid" id="agent-grid"></div>
-      <p class="hint" style="margin-bottom:0">PRism talks to CLIs on your machine — no PRism cloud account. Install any one agent to start; more agents = more perspectives.</p>
+      <details class="add-agent" id="add-agent">
+        <summary>Add your own agent</summary>
+        <p class="hint">Any CLI on this machine that accepts a prompt. Saved in your user folder (~/.prsm), not in git. Examples: codex, gemini, aider.</p>
+        <form id="add-agent-form" class="fields">
+          <label>Name
+            <input id="custom-name" type="text" name="name" placeholder="Codex" autocomplete="off" />
+          </label>
+          <label>Command
+            <input id="custom-command" type="text" name="command" required placeholder="codex" autocomplete="off" />
+          </label>
+          <label class="span-2">Extra flags (optional)
+            <input id="custom-flags" type="text" name="extraFlags" placeholder="--output-format text" autocomplete="off" />
+          </label>
+          <label class="check span-2">
+            <input id="custom-dash-p" type="checkbox" checked />
+            <span>Pass the prompt as -p (uncheck if the CLI wants the prompt as the last argument)</span>
+          </label>
+          <div class="span-2">
+            <button type="submit" class="btn-secondary" id="btn-add-agent">Add agent</button>
+          </div>
+        </form>
+        <p id="add-agent-msg" class="hint"></p>
+      </details>
+      <p class="hint" style="margin-bottom:0">PRism talks to CLIs on your machine — no PRism cloud account. Install any one agent to start, or add your own. More agents = more perspectives.</p>
     </section>
 
     <form class="card" id="form">
@@ -518,9 +641,17 @@ function homePage(port: number): string {
   const restartBtn = document.getElementById("btn-restart");
   const agentGrid = document.getElementById("agent-grid");
   const agentChecks = document.getElementById("agent-checks");
+  const addAgentForm = document.getElementById("add-agent-form");
+  const addAgentMsg = document.getElementById("add-agent-msg");
   const connectPill = document.getElementById("connect-pill");
   const connectBanner = document.getElementById("connect-banner");
   const recheckBtn = document.getElementById("btn-recheck");
+  const githubPill = document.getElementById("github-pill");
+  const githubBanner = document.getElementById("github-banner");
+  const githubForm = document.getElementById("github-form");
+  const githubTokenEl = document.getElementById("github-token");
+  const githubClearBtn = document.getElementById("btn-github-clear");
+  const githubMsg = document.getElementById("github-msg");
   const instructionsEl = document.getElementById("extra-instructions");
   const resetInstrBtn = document.getElementById("btn-reset-instructions");
   const requireDecisionsEl = document.getElementById("require-decisions-md");
@@ -783,6 +914,16 @@ function homePage(port: number): string {
           a.textContent = agent.available ? "Docs" : "Install guide";
           row.appendChild(a);
         }
+        if (agent.custom) {
+          const rm = document.createElement("button");
+          rm.type = "button";
+          rm.className = "btn-remove";
+          rm.textContent = "Remove";
+          rm.addEventListener("click", function () {
+            removeCustom(agent.id, agent.name);
+          });
+          row.appendChild(rm);
+        }
         card.appendChild(row);
         agentGrid.appendChild(card);
       });
@@ -800,7 +941,7 @@ function homePage(port: number): string {
         box.disabled = !agent.available;
         label.style.opacity = agent.available ? "1" : "0.5";
         label.appendChild(box);
-        label.appendChild(document.createTextNode(" " + agent.id));
+        label.appendChild(document.createTextNode(" " + (agent.name || agent.id)));
         agentChecks.appendChild(label);
       });
     }
@@ -820,6 +961,155 @@ function homePage(port: number): string {
       }
       setFormBlocked(true, "Agents unavailable");
     }
+  }
+
+  function setGithubMsg(text, ok) {
+    if (!githubMsg) return;
+    githubMsg.textContent = text || "";
+    githubMsg.className = "hint " + (text ? (ok ? "ok" : "err") : "");
+  }
+
+  function renderGithub(body) {
+    const source = body && body.source ? String(body.source) : "anonymous";
+    const ok = Boolean(body && body.ok);
+    const login = body && body.login ? String(body.login) : "";
+    const detail = body && body.detail ? String(body.detail) : "";
+    const connected = ok && source !== "anonymous";
+    if (githubPill) {
+      githubPill.textContent = connected
+        ? (login ? "@" + login : "Connected")
+        : source === "anonymous"
+          ? "Public PRs"
+          : "Needs token";
+      githubPill.className = "pill " + (ok ? (connected ? "ok" : "warn") : "bad");
+    }
+    if (githubBanner) {
+      githubBanner.className = ok ? (connected ? "ready" : "warn") : "need";
+      githubBanner.textContent = detail || "Checking GitHub access…";
+    }
+    if (githubClearBtn) githubClearBtn.hidden = source !== "file";
+  }
+
+  async function loadGithub() {
+    try {
+      const res = await fetch("/api/github");
+      const body = await res.json();
+      renderGithub(body);
+    } catch (e) {
+      renderGithub({
+        ok: false,
+        source: "anonymous",
+        detail: "Could not check GitHub status.",
+      });
+    }
+  }
+
+  function setAddMsg(text, ok) {
+    if (!addAgentMsg) return;
+    addAgentMsg.textContent = text || "";
+    addAgentMsg.className = "hint " + (text ? (ok ? "ok" : "err") : "");
+  }
+
+  async function removeCustom(id, name) {
+    if (!window.confirm("Remove “" + name + "” from this machine?")) return;
+    try {
+      const res = await fetch("/api/custom-agents/" + encodeURIComponent(id), {
+        method: "DELETE",
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setAddMsg(body.error || "Could not remove agent", false);
+        return;
+      }
+      setAddMsg("Removed " + name, true);
+      renderConnect(body);
+    } catch (e) {
+      setAddMsg("Could not remove agent", false);
+    }
+  }
+
+  if (githubForm) {
+    githubForm.addEventListener("submit", async function (ev) {
+      ev.preventDefault();
+      const token = githubTokenEl instanceof HTMLInputElement
+        ? githubTokenEl.value.trim()
+        : "";
+      if (!token) {
+        setGithubMsg("Paste a GitHub token first", false);
+        return;
+      }
+      try {
+        const res = await fetch("/api/github", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ token: token }),
+        });
+        const body = await res.json();
+        if (!res.ok) {
+          setGithubMsg(body.error || "Could not save token", false);
+          return;
+        }
+        if (githubTokenEl instanceof HTMLInputElement) githubTokenEl.value = "";
+        setGithubMsg("Saved. Private PRs on this machine can use this token.", true);
+        renderGithub(body);
+      } catch (e) {
+        setGithubMsg("Could not save token", false);
+      }
+    });
+  }
+  if (githubClearBtn) {
+    githubClearBtn.addEventListener("click", async function () {
+      try {
+        const res = await fetch("/api/github", { method: "DELETE" });
+        const body = await res.json();
+        setGithubMsg("Token removed from this machine.", true);
+        renderGithub(body);
+      } catch (e) {
+        setGithubMsg("Could not disconnect", false);
+      }
+    });
+  }
+
+  if (addAgentForm) {
+    addAgentForm.addEventListener("submit", async function (ev) {
+      ev.preventDefault();
+      const nameEl = document.getElementById("custom-name");
+      const cmdEl = document.getElementById("custom-command");
+      const flagsEl = document.getElementById("custom-flags");
+      const dashEl = document.getElementById("custom-dash-p");
+      const name = nameEl instanceof HTMLInputElement ? nameEl.value.trim() : "";
+      const command = cmdEl instanceof HTMLInputElement ? cmdEl.value.trim() : "";
+      const extraFlags = flagsEl instanceof HTMLInputElement ? flagsEl.value.trim() : "";
+      const dashP = dashEl instanceof HTMLInputElement ? dashEl.checked : true;
+      if (!command) {
+        setAddMsg("Command is required", false);
+        return;
+      }
+      try {
+        const res = await fetch("/api/custom-agents", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: name || command,
+            command: command,
+            extraFlags: extraFlags,
+            promptStyle: dashP ? "dash-p" : "trailing",
+          }),
+        });
+        const body = await res.json();
+        if (!res.ok) {
+          setAddMsg(body.error || "Could not add agent", false);
+          return;
+        }
+        setAddMsg((body.agent && body.agent.name ? body.agent.name : command) + " saved. Tick it below if Detected.", true);
+        if (cmdEl instanceof HTMLInputElement) cmdEl.value = "";
+        if (nameEl instanceof HTMLInputElement) nameEl.value = "";
+        if (flagsEl instanceof HTMLInputElement) flagsEl.value = "";
+        renderConnect(body);
+      } catch (e) {
+        setAddMsg("Could not add agent", false);
+      }
+    });
   }
 
   function selectedAgents() {
@@ -1266,6 +1556,7 @@ function homePage(port: number): string {
     });
   }
   loadProviders();
+  loadGithub();
   loadReviews();
   attachActive();
   var refreshBtn = document.getElementById("btn-refresh-reviews");
@@ -1436,17 +1727,86 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
       }
 
       if (method === "GET" && url.pathname === "/api/providers") {
-        const detected = await detectAgentStatuses();
-        const registry = createProviderRegistry();
-        const available = await listAvailableProviders(registry);
-        json(res, 200, {
-          providers: detected.readyIds,
-          readyIds: detected.readyIds,
-          readyCount: detected.readyCount,
-          agents: detected.agents,
-          all: available,
-          defaults: [...DEFAULT_MULTI_AGENTS],
-        });
+        json(res, 200, await providersPayload());
+        return;
+      }
+
+      if (method === "GET" && url.pathname === "/api/github") {
+        json(res, 200, await probeGithubAccess());
+        return;
+      }
+
+      if (method === "POST" && url.pathname === "/api/github") {
+        try {
+          const raw = await readBody(req);
+          const body = JSON.parse(raw || "{}") as { token?: string };
+          const token = body.token?.trim() ?? "";
+          const login = await fetchUserLogin(token);
+          await saveGithubToken(token);
+          json(res, 200, {
+            ...(await probeGithubAccess()),
+            saved: true,
+            login,
+          });
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          json(res, 400, { error: message });
+        }
+        return;
+      }
+
+      if (method === "DELETE" && url.pathname === "/api/github") {
+        await clearGithubToken();
+        json(res, 200, await probeGithubAccess());
+        return;
+      }
+
+      if (method === "POST" && url.pathname === "/api/custom-agents") {
+        try {
+          const raw = await readBody(req);
+          const body = JSON.parse(raw || "{}") as {
+            name?: string;
+            command?: string;
+            extraFlags?: string;
+            promptStyle?: "dash-p" | "trailing";
+          };
+          const agent = await addCustomAgent({
+            name: body.name ?? "",
+            command: body.command ?? "",
+            ...(body.extraFlags !== undefined
+              ? { extraFlags: body.extraFlags }
+              : {}),
+            ...(body.promptStyle !== undefined
+              ? { promptStyle: body.promptStyle }
+              : {}),
+          });
+          json(res, 200, { ...(await providersPayload()), agent });
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          json(res, 400, { error: message });
+        }
+        return;
+      }
+
+      if (
+        method === "DELETE" &&
+        url.pathname.startsWith("/api/custom-agents/")
+      ) {
+        const id = decodeURIComponent(
+          url.pathname.slice("/api/custom-agents/".length),
+        );
+        if (!id) {
+          json(res, 400, { error: "Missing agent id" });
+          return;
+        }
+        const removed = await removeCustomAgent(id);
+        if (!removed) {
+          json(res, 404, { error: `No custom agent “${id}”` });
+          return;
+        }
+        json(res, 200, await providersPayload());
         return;
       }
 
@@ -1716,4 +2076,5 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
   }
   console.log("Each PR lives at /pr/<n>/ (triage, list, verify).");
   console.log("Ctrl+C to stop.");
+  openBrowser(`http://127.0.0.1:${port}/`);
 }

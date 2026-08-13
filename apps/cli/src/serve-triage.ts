@@ -9,7 +9,6 @@ import {
   extractDiffForFile,
 } from "@review-os/core";
 import {
-  createProviderRegistry,
   listAvailableProviders,
 } from "@review-os/providers";
 import { githubFileUrl, renderReviewFromDir } from "@review-os/render";
@@ -20,6 +19,7 @@ import {
   type RecheckEntry,
   type ReviewRun,
 } from "@review-os/schemas";
+import { createLiveRegistry } from "./live-registry.js";
 import { runRecheckFinding } from "./run-recheck.js";
 import { runVerifyAuthorUpdates } from "./run-verify.js";
 
@@ -277,7 +277,7 @@ export async function handleTriageApi(
   res: http.ServerResponse,
 ): Promise<boolean> {
   const { repoRoot, outputDir, config, isBusy, setBusy } = options;
-  const registry = createProviderRegistry();
+  const { providers: registry } = await createLiveRegistry();
 
   if (method === "GET" && apiPath === "/health") {
     json(res, 200, { ok: true, pr: (await loadRun(outputDir)).prNumber });

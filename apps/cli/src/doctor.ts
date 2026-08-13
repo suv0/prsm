@@ -1,8 +1,9 @@
 import { access } from "node:fs/promises";
-import { spawn } from "node:child_process";
 import path from "node:path";
 import { commandExists } from "@review-os/providers";
+import { probeGithubAccess } from "@review-os/github";
 import { AGENT_CATALOG } from "./agent-catalog.js";
+import { loadCustomAgents } from "./custom-agents.js";
 
 export type DoctorCheck = {
   id: string;
@@ -19,36 +20,6 @@ async function pathExists(target: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function runGhAuthStatus(): Promise<{ ok: boolean; detail: string }> {
-  return new Promise((resolve) => {
-    const child = spawn("gh", ["auth", "status"], {
-      shell: process.platform === "win32",
-      windowsHide: true,
-    });
-    let out = "";
-    child.stdout?.setEncoding("utf8");
-    child.stderr?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk: string) => {
-      out += chunk;
-    });
-    child.stderr?.on("data", (chunk: string) => {
-      out += chunk;
-    });
-    child.on("error", () => {
-      resolve({ ok: false, detail: "gh not runnable" });
-    });
-    child.on("close", (code) => {
-      const text = out.trim().replace(/\s+/g, " ").slice(0, 180);
-      resolve({
-        ok: code === 0,
-        detail:
-          text ||
-          (code === 0 ? "logged in" : "not logged in — run: gh auth login"),
-      });
-    });
-  });
 }
 
 export async function runDoctor(options: {
@@ -94,35 +65,14 @@ export async function runDoctor(options: {
         : "Missing specialist prompts/rules — clone may be incomplete",
   });
 
-  const ghInstalled = await commandExists("gh");
+  const github = await probeGithubAccess();
   checks.push({
-    id: "gh",
-    ok: ghInstalled,
-    level: "required",
-    label: "GitHub CLI (gh)",
-    detail: ghInstalled
-      ? "found"
-      : "Install from https://cli.github.com/ then: gh auth login",
+    id: "github",
+    ok: github.ok,
+    level: "recommended",
+    label: "GitHub access",
+    detail: github.detail,
   });
-
-  if (ghInstalled) {
-    const auth = await runGhAuthStatus();
-    checks.push({
-      id: "gh-auth",
-      ok: auth.ok,
-      level: "required",
-      label: "gh auth login",
-      detail: auth.detail,
-    });
-  } else {
-    checks.push({
-      id: "gh-auth",
-      ok: false,
-      level: "required",
-      label: "gh auth login",
-      detail: "skipped — install gh first",
-    });
-  }
 
   for (const entry of AGENT_CATALOG) {
     const found = await commandExists(entry.command);
@@ -137,9 +87,25 @@ export async function runDoctor(options: {
     });
   }
 
+  const customs = await loadCustomAgents();
+  for (const custom of customs) {
+    const found = await commandExists(custom.command);
+    checks.push({
+      id: `custom:${custom.id}`,
+      ok: found,
+      level: "recommended",
+      label: `${custom.name} (${custom.command}) [your CLI]`,
+      detail: found
+        ? "found on PATH"
+        : `not found — put ${custom.command} on PATH, or hub → Add your own agent`,
+    });
+  }
+
   const hasLive = checks.some(
     (check) =>
-      AGENT_CATALOG.some((entry) => entry.id === check.id) && check.ok,
+      (AGENT_CATALOG.some((entry) => entry.id === check.id) ||
+        check.id.startsWith("custom:")) &&
+      check.ok,
   );
   checks.push({
     id: "providers",
@@ -150,11 +116,13 @@ export async function runDoctor(options: {
       ? `ready: ${checks
           .filter(
             (check) =>
-              AGENT_CATALOG.some((entry) => entry.id === check.id) && check.ok,
+              (AGENT_CATALOG.some((entry) => entry.id === check.id) ||
+                check.id.startsWith("custom:")) &&
+              check.ok,
           )
-          .map((check) => check.id)
+          .map((check) => check.id.replace(/^custom:/, ""))
           .join(", ")}`
-      : "No agent CLI detected — `pnpm demo` still works. Install any one CLI above, then: pnpm prsm --serve-ui",
+      : "No agent CLI detected — `pnpm demo` still works. Install any one CLI above, add your own in the hub, then: pnpm prsm --serve-ui",
   });
 
   const requiredFailed = checks.some((c) => c.level === "required" && !c.ok);
@@ -174,13 +142,13 @@ export function printDoctorReport(checks: DoctorCheck[], ok: boolean): void {
     const hasLive = checks.some((c) => c.id === "providers" && c.ok);
     if (hasLive) {
       console.log("Ready to review:");
-      console.log("  pnpm prsm --serve-ui --port 8788");
-      console.log("  → http://127.0.0.1:8788/  (paste a PR URL, pick agents)");
+      console.log("  pnpm prsm");
+      console.log("  → http://127.0.0.1:8788/");
     } else {
       console.log("Build + GitHub look good. You still need one AI CLI:");
-      console.log("  1. Install any one agent listed above (Cursor / Claude Code / Command Code)");
+      console.log("  1. Install any one agent listed above, or Add your own agent in the hub");
       console.log("  2. Finish that product's login");
-      console.log("  3. pnpm prsm --serve-ui --port 8788 → Connect agents → Re-check");
+      console.log("  3. pnpm prsm → Add your own agent (or Re-check a built-in)");
       console.log("  Smoke test without an agent: pnpm demo");
     }
   } else {

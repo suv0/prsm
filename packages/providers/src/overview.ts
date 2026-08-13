@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PrOverviewSchema, type PrOverview } from "@review-os/schemas";
+import { cliInvocation, type CliAgentSpec } from "./cli-agents.js";
 import { createCliLogBridge, execCli } from "./run-cli.js";
 
 const MAX_DIFF_CHARS = 60_000;
@@ -83,50 +84,6 @@ function buildOverviewPrompt(input: {
     .join("\n");
 }
 
-function cliInvocation(providerId: string): {
-  command: string;
-  args: (instruction: string, cwd: string) => string[];
-} {
-  switch (providerId) {
-    case "cursor":
-      return {
-        command: "agent",
-        args: (instruction, cwd) => [
-          "-p",
-          instruction,
-          "--output-format",
-          "text",
-          "--mode",
-          "ask",
-          "--trust",
-          "--workspace",
-          cwd,
-        ],
-      };
-    case "claude-code":
-      return {
-        command: "claude",
-        args: (instruction) => ["-p", instruction, "--output-format", "text"],
-      };
-    case "command-code":
-      return {
-        command: "command-code",
-        args: (instruction) => [
-          "-p",
-          instruction,
-          "--skip-onboarding",
-          "--no-session",
-          "--output-format",
-          "text",
-        ],
-      };
-    default:
-      throw new Error(
-        `Overview generation does not support provider "${providerId}"`,
-      );
-  }
-}
-
 export async function generatePrOverview(options: {
   providerId: string;
   repoRoot: string;
@@ -139,9 +96,13 @@ export async function generatePrOverview(options: {
   files: string[];
   diff: string;
   log?: (line: string) => void;
+  extraCliSpecs?: CliAgentSpec[];
 }): Promise<PrOverview> {
   const log = options.log ?? (() => undefined);
-  const { command, args } = cliInvocation(options.providerId);
+  const { command, args } = cliInvocation(
+    options.providerId,
+    options.extraCliSpecs ?? [],
+  );
   const agentDir = path.join(options.outputDir, "agent");
   await mkdir(agentDir, { recursive: true });
   const promptPath = path.join(agentDir, "overview.prompt.txt");

@@ -4,14 +4,18 @@
 
 Local, multi-agent pull request reviews — harsh analysis, polite paste-ready GitHub comments.
 
-Point **`prsm`** at any GitHub PR URL. It fetches the diff with the GitHub CLI, runs specialist passes (correctness, nitpick, devil’s advocate) through local AI CLIs you already use (Cursor Agent, Claude Code, Command Code), and writes a triage-friendly review to disk.
+Point **`prsm`** at any GitHub PR URL. It fetches the diff (GitHub API — `gh` optional), runs specialist passes through local AI CLIs, and writes a triage-friendly review to disk.
 
-**No PRism API key.** Auth lives in the agent CLIs you choose.  
+**No PRism API key.** Auth lives in the agent CLIs you choose, plus an optional GitHub token for private repos.  
 **Never auto-posts to GitHub** — you paste comments yourself.
 
 > Internal workspace packages still use the `@review-os/*` codename. The product is **PRism**; the CLI is **`prsm`** (`review-pr` remains an alias).
 
-Anyone can clone this repo and run it. You still need **GitHub CLI login** plus **at least one AI agent CLI** for a real review. `pnpm demo` works with neither.
+Clone → `pnpm install` → `pnpm prsm`. The hub opens. Public PRs work with no GitHub CLI. Add agents from the UI.
+
+What we **cannot** ship in git: Cursor / Claude / Command Code (or any other model). Those stay programs on your machine — the hub’s **Add your own agent** button is how you point PRism at them.
+
+`pnpm demo` needs no GitHub and no model.
 
 ---
 
@@ -29,10 +33,13 @@ Anyone can clone this repo and run it. You still need **GitHub CLI login** plus 
 |---|---|
 | **Node.js 20+** | Runtime |
 | **pnpm** | Workspace install / build (`corepack enable` if you don’t have it) |
-| **[GitHub CLI](https://cli.github.com/) (`gh`)** | Fetches PR metadata + diff (`gh auth login`) |
-| **Any one AI CLI** | Cursor `agent`, Claude Code `claude`, or Command Code `command-code` |
+| **Any one AI CLI** | Cursor `agent`, Claude Code `claude`, Command Code `command-code`, or **Add your own agent** in the hub |
 
-Optional: a browser for the local hub UI.
+GitHub CLI (`gh`) is **optional**. Public PRs use the GitHub API with no login. Private repos: hub → **Connect GitHub** (paste a token) or `gh auth login`.
+
+Runs on **Windows, macOS, and Linux**. Not iOS — this is a Node CLI + localhost hub.
+
+Optional: a browser (the hub tries to open one).
 
 ---
 
@@ -43,14 +50,14 @@ git clone https://github.com/suv0/prsm.git
 cd prsm
 corepack enable          # if pnpm is missing
 pnpm install
-pnpm build
-pnpm prsm --doctor       # Node, build, gh, agent CLIs — prints install links
+pnpm prsm
 ```
 
-```bash
-gh auth login
-gh auth status
-```
+That last command installs/builds if needed, starts the hub, and opens **http://127.0.0.1:8788/**
+
+1. **Connect GitHub** — skip for public PRs; paste a token for private repos  
+2. **Connect agents** — Re-check a built-in, or **Add your own agent**  
+3. Paste a GitHub PR URL → tick agents → **Run review**
 
 Install **any one** agent (you do not need all three):
 
@@ -59,20 +66,9 @@ Install **any one** agent (you do not need all three):
 | Cursor Agent | `agent` | https://cursor.com/docs/cli/overview | `agent login` or `CURSOR_API_KEY` |
 | Claude Code | `claude` | https://docs.anthropic.com/en/docs/claude-code | Claude Code / Anthropic login |
 | Command Code | `command-code` | https://commandcode.ai/ | Command Code onboarding |
+| Anything else | whatever is on PATH | hub → **Add your own agent** | that CLI’s login |
 
-Then:
-
-```bash
-pnpm prsm --serve-ui --port 8788
-```
-
-Open **http://127.0.0.1:8788/**
-
-1. **Connect agents** — Re-check until at least one shows Detected  
-2. Paste a GitHub PR URL  
-3. Tick the agents you want → **Run review**
-
-Adding a second or third agent later: install its CLI, log in, hit **Re-check**, tick the new box. No PRism config file.
+Custom CLIs and GitHub tokens are saved in `~/.prsm/` on this machine only.
 
 Smoke test with no AI CLIs:
 
@@ -84,7 +80,7 @@ pnpm demo
 
 ## What a run does
 
-- **Agents run in parallel.** Cursor, Claude Code, and Command Code start together.
+- **Agents run in parallel.** Built-in CLIs and any you added in the hub start together.
 - **Each agent’s 3 specialist passes also run in parallel** (correctness, nitpick, devil’s advocate).
 - **Wall clock ≈ the slowest agent**, not “3 agents × 3 passes in a line.” Often ~5–15 minutes per agent if the model is slow; one fast agent can finish much sooner.
 - **Merge is incremental.** When the first agent finishes, triage is already usable. Later agents fold in: similar findings become **one card** with extra agent views (agree / extend / dissent), not duplicates.
@@ -110,11 +106,11 @@ reviews/<n>/final-review.html
 
 ## Hub / triage
 
-The hub (`--serve-ui` / `--serve`) is the main UI:
+The hub (`pnpm prsm`, or `--serve-ui` / `--serve`) is the main UI:
 
 | Page | What |
 |---|---|
-| `http://127.0.0.1:8788/` | Your reviews, Connect agents, start a run |
+| `http://127.0.0.1:8788/` | Your reviews, **Connect GitHub**, **Connect agents** / **Add your own agent**, start a run |
 | `http://127.0.0.1:8788/pr/<n>/` | One-finding-at-a-time triage |
 
 On a finding you can:
@@ -124,6 +120,8 @@ On a finding you can:
 - **Verify author updates** — re-check after the PR author pushed or replied
 
 Pick the agent in the dropdown (same CLIs as the review). One agent per Teach me / Recheck.
+
+**Add your own agent** (hub home): name + command on PATH. PRism stores it in `~/.prsm/custom-agents.json` (this machine only). Tick it like the built-ins once it shows Detected.
 
 Disk-only refresh (no model): `pnpm prsm --render <n>`.
 
@@ -162,6 +160,7 @@ PRism does **not** ship a model. Details: [docs/providers.md](docs/providers.md)
 | `cursor` | `agent` | `agent login` or `CURSOR_API_KEY` |
 | `claude-code` | `claude` | Claude Code / Anthropic login |
 | `command-code` | `command-code` | Command Code login |
+| *(your id)* | any CLI on PATH | hub → **Add your own agent** |
 | `anthropic` | HTTP API | `ANTHROPIC_API_KEY` (optional; not the default path) |
 | `demo` | fixtures | none |
 
@@ -191,7 +190,7 @@ reviews/<n>/
 
 | Goal | Command |
 |---|---|
-| Hub UI | `pnpm prsm --serve-ui --port 8788` |
+| Hub UI | `pnpm prsm` (opens http://127.0.0.1:8788/) |
 | Setup check | `pnpm prsm --doctor` |
 | List agent CLIs | `pnpm prsm --list-providers` |
 | Hands-off multi-agent | `pnpm prsm --run <url>` |
@@ -208,8 +207,8 @@ reviews/<n>/
 
 | Symptom | What to try |
 |---|---|
-| Clone runs but **Run review** is disabled | Install + log into any one agent; hub → **Connect agents** → Re-check |
-| `gh` / auth errors | `gh auth login`, then `gh pr view <n> --repo owner/repo` |
+| Clone runs but **Run review** is disabled | Install + log into any one agent, **or Add your own agent**; hub → **Connect agents** → Re-check |
+| Private PR 404 / GitHub errors | Hub → **Connect GitHub** (paste a `repo` token), or `gh auth login` |
 | Provider missing | Install CLI; `pnpm prsm --doctor` / `--list-providers` |
 | Claude “no stdin data received in 3s” | Upgrade to this PRism version (stdin is closed; prompts go via `-p`) |
 | Cursor `Error: [unavailable]` | Transient Cursor API; re-run that agent, or rely on others |
@@ -225,8 +224,8 @@ reviews/<n>/
 apps/cli/           # prsm CLI + hub + triage
 packages/
   core/             # pipeline, finalize, merge, reverify, verify  (@review-os/core)
-  providers/        # cursor / claude-code / command-code / …
-  github/           # gh-backed PR fetch
+  providers/        # cursor / claude-code / command-code / custom CLIs
+  github/           # PR fetch (GitHub API; gh optional)
   render/           # HTML / markdown / triage
   schemas/          # shared Zod types
 prompts/ + rules/   # specialist pass prompts

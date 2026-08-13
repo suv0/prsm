@@ -1,7 +1,7 @@
 # Pipeline
 
 ```text
-Load PR (gh) → knowledge + plan → shared overview
+Load PR (GitHub API; gh optional) → knowledge + plan → shared overview
   → agents in parallel
        each agent: 3 specialist passes in parallel (correctness, nitpick, devil’s advocate)
        each finished agent: snapshot under runs/ + rebuild merged triage
@@ -18,5 +18,5 @@ This rebuild happens **when each agent finishes**, not only at the end. You can 
 
 Markdown/HTML are render-only. `findings.json` / `run.json` are the source of truth.
 
-Hands-off: `pnpm prsm --run <url>` or the hub **Run review** button.  
+Hands-off: `pnpm prsm --run <url>` or the hub **Run review** button (`pnpm prsm`).  
 Chat path: prepare → write `passes/*.findings.json` → `--finalize <n>`.

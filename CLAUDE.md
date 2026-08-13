@@ -15,10 +15,10 @@ follow `.cursor/skills/review-pr/SKILL.md` exactly.
 ## Preferred for most people
 
 ```bash
-pnpm prsm --serve-ui --port 8788
+pnpm prsm
 ```
 
-http://127.0.0.1:8788/ — Connect agents, run the PR, then triage at `/pr/<n>/`.
+http://127.0.0.1:8788/ — Connect GitHub, Connect agents (or Add your own), run the PR, then triage at `/pr/<n>/`.
 
 Hands-off CLI: `pnpm prsm --provider claude-code <url>` or `pnpm prsm --run <url>`.
 
@@ -27,6 +27,6 @@ Hands-off CLI: `pnpm prsm --provider claude-code <url>` or `pnpm prsm --run <url
 1. `pnpm prsm <url>` — prepare
 2. Write each `passes/<pass>.findings.json` from `agent/*.brief.md` (blind)
 3. `pnpm prsm --finalize <n>`
-4. Point at `pnpm prsm --serve-ui` → http://127.0.0.1:8788/pr/<n>/
+4. Open http://127.0.0.1:8788/pr/<n>/ (hub is `pnpm prsm` if it isn’t running)
 
 Triage Recheck / Teach me use the provider dropdown. Disk refresh: `pnpm prsm --render <n>`.

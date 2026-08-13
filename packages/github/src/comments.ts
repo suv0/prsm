@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { execOrThrow } from "./exec.js";
+import {
+  explainGithubApiError,
+  githubPaginateJson,
+} from "./api.js";
+import { resolveGithubToken } from "./auth.js";
+import { commandExists, execOrThrow } from "./exec.js";
 import { parsePrRef, type ParsedPrRef } from "./parse.js";
 
 const GhReviewCommentSchema = z.object({
@@ -92,6 +97,46 @@ async function ghJsonPages<T>(
   return list.map((item) => schema.parse(item));
 }
 
+async function loadReviewComments(
+  ref: ParsedPrRef,
+): Promise<GhReviewComment[]> {
+  const path = `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments`;
+  const { token } = await resolveGithubToken();
+  const repo = `${ref.owner}/${ref.repo}`;
+
+  const viaApi = async (auth: string | undefined) =>
+    (
+      await githubPaginateJson(
+        `/${path}?per_page=100`,
+        auth,
+        GhReviewCommentSchema,
+      )
+    ).map(normalizeComment);
+
+  if (token) {
+    try {
+      return await viaApi(token);
+    } catch (error) {
+      throw new Error(explainGithubApiError(error, repo));
+    }
+  }
+
+  try {
+    return await viaApi(undefined);
+  } catch (error) {
+    if (await commandExists("gh")) {
+      try {
+        return (await ghJsonPages(path, GhReviewCommentSchema)).map(
+          normalizeComment,
+        );
+      } catch {
+        throw new Error(explainGithubApiError(error, repo));
+      }
+    }
+    throw new Error(explainGithubApiError(error, repo));
+  }
+}
+
 /**
  * Fetch PR review comments (inline) and group into threads by root comment.
  */
@@ -99,12 +144,7 @@ export async function fetchPrReviewThreads(
   prRef: string | ParsedPrRef,
 ): Promise<{ ref: ParsedPrRef; threads: ReviewCommentThread[] }> {
   const ref = typeof prRef === "string" ? parsePrRef(prRef) : prRef;
-  const comments = (
-    await ghJsonPages(
-      `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments`,
-      GhReviewCommentSchema,
-    )
-  ).map(normalizeComment);
+  const comments = await loadReviewComments(ref);
 
   const byId = new Map<number, GhReviewComment>();
   for (const comment of comments) byId.set(comment.id, comment);

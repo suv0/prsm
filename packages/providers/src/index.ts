@@ -9,6 +9,17 @@ export {
   listAvailableProviders,
 } from "./registry.js";
 export type { ProviderId } from "./registry.js";
+export {
+  GenericCliProvider,
+  RESERVED_PROVIDER_IDS,
+  BUILTIN_CLI_SPECS,
+  slugAgentId,
+  assertSafeCliCommand,
+  buildCliArgs,
+  resolveCliSpec,
+  cliInvocation,
+} from "./cli-agents.js";
+export type { CliAgentSpec, PromptStyle } from "./cli-agents.js";
 export { parseFindingsFromModelText } from "./parse-findings.js";
 export { buildReviewUserPrompt } from "./build-prompt.js";
 export {

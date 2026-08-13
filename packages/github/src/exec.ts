@@ -70,3 +70,15 @@ export async function execOrThrow(
   }
   return result.stdout;
 }
+
+export async function commandExists(command: string): Promise<boolean> {
+  try {
+    const probe =
+      process.platform === "win32"
+        ? await execCommand("where.exe", [command])
+        : await execCommand("which", [command]);
+    return probe.code === 0 && probe.stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
+}

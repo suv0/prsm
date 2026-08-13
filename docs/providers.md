@@ -9,32 +9,40 @@ All providers implement the same `Provider.complete()` contract. PRism does **no
 | `command-code` | Command Code CLI (`command-code -p`) | No — Command Code login | `--skip-onboarding --no-session` |
 | `anthropic` | Anthropic HTTP API | Yes — `ANTHROPIC_API_KEY` | Optional; not the default path |
 | `demo` | Local fixtures | No | `pnpm demo` |
+| *(your id)* | Any CLI you add in the hub | No — that CLI’s login | Saved in `~/.prsm/custom-agents.json` |
 
 ## Clone → first agent
 
-You only need **one** of cursor / claude-code / command-code.
-
 ```bash
-pnpm install && pnpm build
-pnpm prsm --doctor          # prints install URLs for missing CLIs
-pnpm prsm --serve-ui        # Connect agents panel → Re-check
+pnpm install
+pnpm prsm                 # hub at http://127.0.0.1:8788/
 ```
 
-1. Install the CLI from the doctor link (or the table in the README)
+You only need **one** CLI: a built-in **or** hub → **Add your own agent**.
+
+Public PRs need no GitHub login. Private: hub → **Connect GitHub** (token) or `gh auth login`.
+
+1. Install a CLI, **or** **Add your own agent** (name + command on PATH)
 2. Finish that product’s login
 3. Hub → **Connect agents** → **Re-check**
 4. Tick that agent and run a PR
 
-To add another agent later: install + login + Re-check + tick the new box. No extra PRism config.
+Custom CLIs live on this machine only (`~/.prsm/custom-agents.json`). GitHub tokens: `~/.prsm/github.json`.
 
-```bash
-gh auth login          # required — PR fetch via `gh`
-agent login            # if using cursor (or set CURSOR_API_KEY)
-```
+### Add your own CLI
+
+The hub form asks for:
+
+- **Name** — shown on cards (id is a slug, e.g. `Codex` → `codex`)
+- **Command** — a single executable on PATH (`codex`, `gemini`, `aider`)
+- **Extra flags** — optional argv, e.g. `--output-format text`
+- **Pass prompt as `-p`** — on for Cursor/Claude-style CLIs; off if the prompt is the last argument
+
+PRism then runs: `command -p "<instruction>" [extra flags]` (or trailing prompt). The instruction tells the CLI to read a prompt file and return findings JSON — same contract as the built-ins.
 
 ## Recommended usage
 
-1. **Local hub:** `pnpm prsm --serve-ui` → Connect agents → paste any GitHub PR URL  
+1. **Local hub:** `pnpm prsm` → Connect GitHub / agents → paste any GitHub PR URL  
 2. **CLI auto-run:** `pnpm prsm --run <url>` (every **available** CLI agent, **in parallel**)  
 3. **Single provider:** `pnpm prsm --provider claude-code <url>`  
 4. **Chat skill:** `prsm <url>` or `review-pr <url>` inside Cursor / Claude / Command Code in this repo  

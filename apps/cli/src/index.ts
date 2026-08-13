@@ -16,23 +16,30 @@ import {
 import { compareBranches } from "@review-os/git";
 import { fetchPullRequest } from "@review-os/github";
 import {
-  createProviderRegistry,
   defaultPasses,
   detectDefaultCliProvider,
   listAvailableProviders,
-  type ProviderId,
 } from "@review-os/providers";
 import { renderReviewFromDir, writeReviewArtifacts } from "@review-os/render";
 import type { AppConfig } from "@review-os/schemas";
 import { serveUi } from "./serve-ui.js";
 import { printDoctorReport, runDoctor } from "./doctor.js";
-import { CLI_PROVIDERS, runWithProvider } from "./run-provider.js";
+import { createLiveRegistry } from "./live-registry.js";
+import { runWithProvider } from "./run-provider.js";
 import { runVerifyAuthorUpdates } from "./run-verify.js";
 
 function printHelp(): void {
   console.log(`PRism — see every angle before you merge
 
-Chat (no API key) — recommended:
+Clone and go:
+  pnpm install
+  pnpm prsm                      # starts the hub (installs/builds if needed)
+  → http://127.0.0.1:8788/
+
+Public PRs need no GitHub CLI. Private repos: hub → Connect GitHub (paste a token).
+Add any AI CLI from the hub (Cursor / Claude / Command Code / your own).
+
+Chat (no API key):
   In Cursor / Claude Code / Command Code:
     prsm https://github.com/org/repo/pull/123
     review-pr https://github.com/org/repo/pull/123   # alias
@@ -46,23 +53,24 @@ Each finalize/run is versioned under reviews/<n>/runs/<timestamp>-<agent>/.
 Top-level final-review.* is a merged view across agents (similar findings combined).
 
 CLI auto-run with local agent tools (no PRism API key):
-  pnpm prsm --run <pr-url>           # auto-pick cursor|claude-code|command-code
+  pnpm prsm --run <pr-url>           # auto-pick first available CLI (incl. ones you added)
   pnpm prsm --provider cursor <url>
   pnpm prsm --provider claude-code <url>
   pnpm prsm --provider command-code <url>
   pnpm prsm --provider anthropic <url>   # needs ANTHROPIC_API_KEY
+  pnpm prsm --provider <your-cli-id> <url>  # hub → Add your own agent
 
 Other:
   prsm --demo
   prsm --load-only <pr-url>
   prsm --list-providers
-  prsm --doctor                       # check Node, gh, agent CLIs (prints install links)
+  prsm --doctor                       # Node, GitHub access, agent CLIs
   prsm --base <base> --head <head>
   prsm --agent <name>                # label this agent in runs/ + merge
   prsm --rebuild-merge <n>           # archive legacy + rebuild merged view
   prsm --render <n>                  # re-render md/html/triage from run.json (no re-merge)
   prsm --verify <n>                  # re-check author replies + new commits on open findings
-  prsm --serve-ui [--port 8788]      # hub: connect agents, run reviews, open /pr/<n>/
+  prsm --serve-ui [--port 8788]      # hub (also the default when you pass no flags)
   prsm --serve [<n>] [--port 8788]   # same hub (optional PR highlight)
 
 Alias: pnpm review-pr … works the same as pnpm prsm …
@@ -250,6 +258,27 @@ function parseArgs(argv: string[]): {
     }
   }
 
+  const askedSomething =
+    demo ||
+    help ||
+    loadOnly ||
+    prepare ||
+    run ||
+    listProviders ||
+    doctor ||
+    finalize !== undefined ||
+    rebuildMerge !== undefined ||
+    render !== undefined ||
+    verify !== undefined ||
+    serveUi ||
+    Boolean(prRef) ||
+    Boolean(base) ||
+    Boolean(head);
+  if (!askedSomething) {
+    serveUi = true;
+    if (port === 8787) port = 8788;
+  }
+
   return {
     demo,
     help,
@@ -393,7 +422,7 @@ async function main(): Promise<void> {
   }
 
   const cwd = process.cwd();
-  const providers = createProviderRegistry();
+  const { providers } = await createLiveRegistry();
 
   if (parsed.listProviders) {
     const available = await listAvailableProviders(providers);
@@ -573,7 +602,7 @@ async function main(): Promise<void> {
   }
 
   if (parsed.prRef && parsed.run) {
-    let providerId = parsed.provider as ProviderId | undefined;
+    let providerId = parsed.provider;
     if (!providerId) {
       const detected = await detectDefaultCliProvider(providers);
       if (!detected) {

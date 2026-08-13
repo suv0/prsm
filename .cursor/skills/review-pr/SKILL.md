@@ -26,7 +26,7 @@ Optional CLI shortcut if the user wants hands-off: `pnpm prsm --run <url>` (uses
 **UI (recommended for multi-agent):**
 
 ```bash
-pnpm prsm --serve-ui
+pnpm prsm
 ```
 
 Open http://127.0.0.1:8788/ → paste the PR URL → Run review (available agents in **parallel**; specialist passes also parallel).
@@ -103,7 +103,7 @@ pnpm prsm --rebuild-merge <n>
 Tell the user to open triage via:
 
 ```bash
-pnpm prsm --serve-ui --port 8788
+pnpm prsm
 ```
 
 → `http://127.0.0.1:8788/pr/<n>/` (hub home lists every local review). Recheck / Teach me need the hub. Static `reviews/<n>/triage.html` is view-only. Do **not** post comments to GitHub.

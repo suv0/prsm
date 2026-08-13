@@ -18,14 +18,15 @@ pnpm demo
 - **Product name:** PRism · **CLI:** `prsm` (`review-pr` is a legacy alias)
 - **Packages:** `@review-os/*` is the internal monorepo codename for now — don’t rename packages in drive-by PRs
 - Prefer small PRs: one feature or fix each
-- Don’t commit `reviews/` output or secrets (`.env`, API keys)
+- User-facing change → update `README.md` + `docs/` in the same PR (hub, GitHub auth, agents, CLI)
+- Don’t commit `reviews/` output or secrets (`.env`, API keys, `~/.prsm` tokens)
 - Never add auto-posting to GitHub unless it’s an explicit, opt-in feature
 
 ## Useful commands
 
 | Goal | Command |
 |---|---|
-| Hub | `pnpm prsm --serve-ui --port 8788` |
+| Hub | `pnpm prsm` |
 | Doctor | `pnpm prsm --doctor` |
 | Typecheck | `pnpm typecheck` |
 
@@ -33,4 +34,4 @@ pnpm demo
 
 1. Describe the *why*
 2. Note how you tested (commands / UI steps)
-3. Update README/docs when user-facing behavior changes
+3. Update README/docs in the same PR when user-facing behavior changes (do not leave `--serve-ui` / `gh auth login` as required if they are not)
