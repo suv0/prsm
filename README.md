@@ -4,12 +4,14 @@
 
 Local, multi-agent pull request reviews — harsh analysis, polite paste-ready GitHub comments.
 
-Point **`prsm`** at any GitHub PR URL. It fetches the diff with the GitHub CLI, runs specialist passes (correctness → nitpick → devil’s advocate) through local AI CLIs you already use (Cursor Agent, Claude Code, Command Code), and writes a triage-friendly review to disk.
+Point **`prsm`** at any GitHub PR URL. It fetches the diff with the GitHub CLI, runs specialist passes (correctness, nitpick, devil’s advocate) through local AI CLIs you already use (Cursor Agent, Claude Code, Command Code), and writes a triage-friendly review to disk.
 
 **No PRism API key.** Auth lives in the agent CLIs you choose.  
 **Never auto-posts to GitHub** — you paste comments yourself.
 
 > Internal workspace packages still use the `@review-os/*` codename. The product is **PRism**; the CLI is **`prsm`** (`review-pr` remains an alias).
+
+Anyone can clone this repo and run it. You still need **GitHub CLI login** plus **at least one AI agent CLI** for a real review. `pnpm demo` works with neither.
 
 ---
 
@@ -26,60 +28,108 @@ Point **`prsm`** at any GitHub PR URL. It fetches the diff with the GitHub CLI, 
 | Tool | Why |
 |---|---|
 | **Node.js 20+** | Runtime |
-| **pnpm** | Workspace install / build |
+| **pnpm** | Workspace install / build (`corepack enable` if you don’t have it) |
 | **[GitHub CLI](https://cli.github.com/) (`gh`)** | Fetches PR metadata + diff (`gh auth login`) |
-| At least one AI CLI | See [Providers](#providers) |
+| **Any one AI CLI** | Cursor `agent`, Claude Code `claude`, or Command Code `command-code` |
 
-Optional but recommended: a modern browser for the local UI.
+Optional: a browser for the local hub UI.
 
 ---
 
-## Quick start (< 10 minutes)
+## Quick start (clone → first review)
 
 ```bash
 git clone https://github.com/suv0/prsm.git
 cd prsm
+corepack enable          # if pnpm is missing
 pnpm install
 pnpm build
-
-# check setup
-pnpm prsm --doctor
-
-# GitHub access for private (and public) PRs
-gh auth login
-gh auth status
-
-# See which local agent CLIs are available
-pnpm prsm --list-providers
+pnpm prsm --doctor       # Node, build, gh, agent CLIs — prints install links
 ```
 
-### Option A — Local UI (easiest)
+```bash
+gh auth login
+gh auth status
+```
+
+Install **any one** agent (you do not need all three):
+
+| Agent | CLI | Install | Login |
+|---|---|---|---|
+| Cursor Agent | `agent` | https://cursor.com/docs/cli/overview | `agent login` or `CURSOR_API_KEY` |
+| Claude Code | `claude` | https://docs.anthropic.com/en/docs/claude-code | Claude Code / Anthropic login |
+| Command Code | `command-code` | https://commandcode.ai/ | Command Code onboarding |
+
+Then:
 
 ```bash
 pnpm prsm --serve-ui --port 8788
 ```
 
-Open **http://127.0.0.1:8788/** → paste a PR URL → pick agents → **Run review**.
+Open **http://127.0.0.1:8788/**
 
-- Agents run **one after another** (often ~3–6 minutes per specialist pass)
-- Live CLI output + heartbeats show in the log so long waits don’t look frozen
-- **Force stop** / **Restart** are available if something stalls
+1. **Connect agents** — Re-check until at least one shows Detected  
+2. Paste a GitHub PR URL  
+3. Tick the agents you want → **Run review**
 
-When finished, open:
+Adding a second or third agent later: install its CLI, log in, hit **Re-check**, tick the new box. No PRism config file.
 
-```text
-reviews/<pr-number>/triage.html
-reviews/<pr-number>/final-review.html
-```
-
-Or serve triage with live recheck:
+Smoke test with no AI CLIs:
 
 ```bash
-pnpm prsm --serve <pr-number>
-# → http://127.0.0.1:8787/
+pnpm demo
 ```
 
-### Option B — CLI one-shot
+---
+
+## What a run does
+
+- **Agents run in parallel.** Cursor, Claude Code, and Command Code start together.
+- **Each agent’s 3 specialist passes also run in parallel** (correctness, nitpick, devil’s advocate).
+- **Wall clock ≈ the slowest agent**, not “3 agents × 3 passes in a line.” Often ~5–15 minutes per agent if the model is slow; one fast agent can finish much sooner.
+- **Merge is incremental.** When the first agent finishes, triage is already usable. Later agents fold in: similar findings become **one card** with extra agent views (agree / extend / dissent), not duplicates.
+- Live **per-agent progress bars** and **color-coded logs**. Click an agent card to filter the log.
+- **Force stop** / **Force stop & restart** if something stalls.
+
+When at least one agent has merged, open:
+
+```text
+http://127.0.0.1:8788/pr/<n>/
+```
+
+or the files on disk:
+
+```text
+reviews/<n>/triage.html
+reviews/<n>/final-review.html
+```
+
+`reviews/` is gitignored — PR text stays on your machine.
+
+---
+
+## Hub / triage
+
+The hub (`--serve-ui` / `--serve`) is the main UI:
+
+| Page | What |
+|---|---|
+| `http://127.0.0.1:8788/` | Your reviews, Connect agents, start a run |
+| `http://127.0.0.1:8788/pr/<n>/` | One-finding-at-a-time triage |
+
+On a finding you can:
+
+- **Teach me** — deep teammate walkthrough (then **Copy lesson**)
+- **Recheck** — ask a question; history stores the answer + a paste-ready GitHub comment
+- **Verify author updates** — re-check after the PR author pushed or replied
+
+Pick the agent in the dropdown (same CLIs as the review). One agent per Teach me / Recheck.
+
+Disk-only refresh (no model): `pnpm prsm --render <n>`.
+
+---
+
+## Option B — CLI one-shot
 
 ```bash
 pnpm prsm --run https://github.com/org/repo/pull/123
@@ -89,9 +139,9 @@ pnpm prsm --provider claude-code https://github.com/org/repo/pull/123
 pnpm prsm --provider command-code https://github.com/org/repo/pull/123
 ```
 
-### Option C — Chat skill (Cursor / Claude / Command Code)
+`--run` uses every **available** local CLI agent in parallel.
 
-In the agent chat inside this repo:
+### Option C — Chat skill (inside this repo)
 
 ```text
 review-pr https://github.com/org/repo/pull/123
@@ -99,42 +149,23 @@ review-pr https://github.com/org/repo/pull/123
 prsm https://github.com/org/repo/pull/123
 ```
 
-The skill follows `.cursor/skills/review-pr/SKILL.md` (prepare → specialist passes → finalize). Still no auto-post to GitHub.
-
-### Sanity check without AI
-
-```bash
-pnpm demo
-```
+Follows `.cursor/skills/review-pr/SKILL.md` (prepare → specialist passes → finalize). Still no auto-post.
 
 ---
 
-## Connect an agent (first-time setup)
+## Providers
 
-PRism does **not** ship an AI model. It drives CLIs already on your machine.
-
-1. Run `pnpm prsm --doctor` — see what’s missing  
-2. Or open `pnpm prsm --serve-ui` → **Connect agents** panel  
-3. Install **any one** of: Cursor Agent (`agent`), Claude Code (`claude`), Command Code (`command-code`)  
-4. Finish that product’s login  
-5. Hit **Re-check** in the UI (or re-run `--doctor`)
-
-You only need **one** agent to review. Extra agents add more perspectives (runs take longer).
-
----
+PRism does **not** ship a model. Details: [docs/providers.md](docs/providers.md).
 
 | Id | CLI | Auth (outside PRism) |
 |---|---|---|
-| `cursor` | `agent` (Cursor Agent CLI) | `agent login` or `CURSOR_API_KEY` |
+| `cursor` | `agent` | `agent login` or `CURSOR_API_KEY` |
 | `claude-code` | `claude` | Claude Code / Anthropic login |
 | `command-code` | `command-code` | Command Code login |
-| `anthropic` | HTTP API | `ANTHROPIC_API_KEY` (optional path) |
+| `anthropic` | HTTP API | `ANTHROPIC_API_KEY` (optional; not the default path) |
 | `demo` | fixtures | none |
 
-Details: [docs/providers.md](docs/providers.md).
-
-Install and log into whichever CLIs you want **before** the first run.  
-`pnpm prsm --list-providers` shows what this machine can actually use.
+`pnpm prsm --list-providers` shows what this machine can use.
 
 ---
 
@@ -142,11 +173,11 @@ Install and log into whichever CLIs you want **before** the first run.
 
 ```text
 reviews/<n>/
-  final-review.md       # human-readable review (starts with PR overview)
-  final-review.html     # rich view
+  final-review.md       # merged review (starts with PR overview)
+  final-review.html
   triage.html           # one-finding-at-a-time queue
   findings.json
-  runs/<id>-<agent>/    # per-agent snapshots (multi-agent merges)
+  runs/<id>-<agent>/    # per-agent snapshots
   agent/                # prompts sent to CLIs
   passes/
   knowledge/
@@ -154,33 +185,22 @@ reviews/<n>/
   diff.patch
 ```
 
-`reviews/` is gitignored — your PR text stays on your machine unless you choose to commit it.
-
 ---
 
-## Common workflows
+## Common commands
 
 | Goal | Command |
 |---|---|
-| Multi-agent UI | `pnpm prsm --serve-ui` |
-| Prepare only (briefs, no AI yet) | `pnpm prsm <url>` |
+| Hub UI | `pnpm prsm --serve-ui --port 8788` |
+| Setup check | `pnpm prsm --doctor` |
+| List agent CLIs | `pnpm prsm --list-providers` |
+| Hands-off multi-agent | `pnpm prsm --run <url>` |
+| Prepare only (briefs, no AI) | `pnpm prsm <url>` |
 | Finalize after writing `passes/*.findings.json` | `pnpm prsm --finalize <n>` |
-| Triage UI + recheck | `pnpm prsm --serve <n>` |
 | Re-render HTML from disk | `pnpm prsm --render <n>` |
-| List providers | `pnpm prsm --list-providers` |
-| Setup doctor | `pnpm prsm --doctor` |
+| Verify author updates | `pnpm prsm --verify <n>` |
 
-`pnpm review-pr …` works the same (legacy alias).
-
----
-
-## Expectations (time & privacy)
-
-- **Wall clock:** one PR overview, then 3 agents × 3 passes × a few minutes each is often **~30–50+ minutes**. That is mostly model API time, not a hang.
-- **PR overview:** first section in `final-review` / triage — what the PR does, what changed, risks, test focus.
-- **Logs:** `▶` / heartbeats / `cli:` lines mean work is in progress; `✓` / `✗` end a pass.
-- **Privacy:** runs locally; PRism does **not** post comments. Use paste-ready text from triage / final review.
-- **Network:** needs GitHub (`gh`) plus whatever your chosen agent CLIs call.
+`pnpm review-pr …` is the same CLI.
 
 ---
 
@@ -188,31 +208,33 @@ reviews/<n>/
 
 | Symptom | What to try |
 |---|---|
+| Clone runs but **Run review** is disabled | Install + log into any one agent; hub → **Connect agents** → Re-check |
 | `gh` / auth errors | `gh auth login`, then `gh pr view <n> --repo owner/repo` |
-| Provider missing | Install CLI; re-check `pnpm prsm --list-providers` |
-| Cursor `Error: [unavailable]` | Transient Cursor API; re-run that pass/agent, or rely on other agents |
-| JSON parse failures | Pipeline continues other passes; upgrade to latest PRism (resilient parser) |
-| “Already running” in UI | Attach to the active job, or **Force stop** then restart |
-| Empty log for minutes | Heartbeats should appear every ~20s; refresh serve-ui after upgrade |
+| Provider missing | Install CLI; `pnpm prsm --doctor` / `--list-providers` |
+| Claude “no stdin data received in 3s” | Upgrade to this PRism version (stdin is closed; prompts go via `-p`) |
+| Cursor `Error: [unavailable]` | Transient Cursor API; re-run that agent, or rely on others |
+| JSON / Teach me looks like raw JSON | Recheck again on current PRism (lesson is recovered from dumps) |
+| “Already running” | Attach to that job, or **Force stop** then restart |
+| Empty log for minutes | Heartbeats ~20s; per-agent bars show which pass is in flight |
 
 ---
 
 ## Project layout
 
 ```text
-apps/cli/           # prsm CLI + serve-ui + triage server
+apps/cli/           # prsm CLI + hub + triage
 packages/
-  core/             # pipeline, finalize, merge, reverify  (@review-os/core)
+  core/             # pipeline, finalize, merge, reverify, verify  (@review-os/core)
   providers/        # cursor / claude-code / command-code / …
   github/           # gh-backed PR fetch
   render/           # HTML / markdown / triage
   schemas/          # shared Zod types
 prompts/ + rules/   # specialist pass prompts
-.cursor/skills/     # agent-first chat skill
+.cursor/skills/     # agent-first chat skills
 docs/               # vision, pipeline, providers
 ```
 
-More context: [docs/vision.md](docs/vision.md), [docs/pipeline.md](docs/pipeline.md).
+More: [docs/vision.md](docs/vision.md), [docs/pipeline.md](docs/pipeline.md), [docs/providers.md](docs/providers.md).
 
 ---
 

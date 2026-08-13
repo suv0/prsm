@@ -7,17 +7,37 @@ import {
   killActiveCliChildren,
   listAvailableProviders,
 } from "@review-os/providers";
+import { renderReviewFromDir } from "@review-os/render";
 import {
   DEFAULT_MULTI_AGENTS,
   runAllCliAgents,
   type AgentRunResult,
 } from "./run-provider.js";
 import { detectAgentStatuses } from "./agent-catalog.js";
+import {
+  deleteReviewDir,
+  listReviewSummaries,
+  setReviewHubStatus,
+  type ReviewHubMeta,
+} from "./review-inventory.js";
+import {
+  handleTriageApi,
+  serveReviewStatic,
+  type TriageControllerOptions,
+} from "./serve-triage.js";
+import {
+  applyLogToProgress,
+  initJobProgress,
+  syncTracksFromResults,
+  type JobProgress,
+} from "./job-progress.js";
 
 export type ServeUiOptions = {
   repoRoot: string;
   config: AppConfig;
   port: number;
+  /** Optional PR to highlight in logs after start. */
+  focusPr?: number;
 };
 
 type JobStatus = "queued" | "running" | "done" | "error" | "cancelled";
@@ -30,13 +50,62 @@ type Job = {
   createdAt: string;
   updatedAt: string;
   logs: string[];
+  progress: JobProgress;
   results: AgentRunResult[];
   cancelRequested: boolean;
+  extraInstructions?: string;
+  requireDecisionsMd?: boolean;
   prNumber?: number;
   outputDir?: string;
   mergedFindingCount?: number;
   error?: string;
 };
+
+/** Prefill for the hub “extra instructions” box (user-editable). */
+const DEFAULT_EXTRA_INSTRUCTIONS = `High bar for this review. Prefer fewer, sharper findings over noise.
+
+Naming & meaning (important):
+- Judge function, variable, type, and parameter names against what the code actually does AND names used nearby / in related changed files — not only whether a name looks fine in isolation.
+- Flag names that understate or overstate responsibility (e.g. a helper named like a narrow check but used as broader “can manage” logic).
+- Prefer names a teammate would still trust after reading the whole PR.
+
+Hard review lenses (cover as applicable):
+1. Correctness — does it actually work?
+2. Authorization/security — can someone do something they shouldn't?
+3. State consistency — can UI/state get into an invalid state?
+4. Edge cases — missing/invalid/unexpected data?
+5. Architecture — duplicated logic, wrong abstraction, drift between screens.
+6. UX — destructive actions, misleading controls, broken/loading states.
+7. Dead code/scope — unnecessary code or unrelated changes.
+8. Maintainability — fragile assumptions, positional mappings, hardcoded policy.
+9. Tests — important behavior that isn't covered.
+
+Stance:
+- Be skeptical: verify claimed behavior from the code and related call sites.
+- Distinguish real bugs from design preferences/nits.
+- Prefer evidence from the diff; ask instead of guessing.
+- Keep reviewComment like a teammate reading the code — concrete names, a realistic scenario, a plain ask. Do not stamp every comment with “Hm… interesting.” or a compressed “Could we…?” scanner line.`;
+
+const EXTRA_INSTRUCTIONS_STORAGE_KEY = "prism:extra-instructions:v2";
+const REQUIRE_DECISIONS_MD_STORAGE_KEY = "prism:require-decisions-md:v1";
+
+/**
+ * Optional Allchrono-style team rule. Only injected when the hub checkbox is on.
+ * Open-source / generic runs leave the box unchecked and never see this.
+ */
+const REQUIRE_DESIGN_DECISIONS_MD_RULE = `## Team rule (enabled for this run): design-decision docs required
+
+Every PR must include a markdown file that records design decisions for the module/task (what was decided, why, alternatives considered, and what others need to know).
+
+Check the diff for new or updated \`.md\` decision docs (e.g. under \`docs/\`, \`.idea/\`, \`decisions/\`, ADR-style files, or a clearly named decisions note in the PR). A PR description alone is not enough unless the project already treats a specific path as the decision log — prefer a real \`.md\` file in the change set.
+
+If missing or too thin to capture real decisions:
+- Emit a finding with severity **blocker** (or **major** only if a partial doc exists but is incomplete).
+- Category: \`process\` or \`documentation\`.
+- Say which decision topics from the code change still need writing down.
+- Keep \`reviewComment\` polite and paste-ready (Could we add …?).
+
+If an adequate decisions \`.md\` is present and matches the change, do not invent a finding for this rule.`;
 
 const jobs = new Map<string, Job>();
 
@@ -64,6 +133,7 @@ function appendLog(job: Job, line: string): void {
   const stamp = new Date().toISOString().slice(11, 19);
   job.logs.push(`[${stamp}] ${line}`);
   if (job.logs.length > 800) job.logs.splice(0, job.logs.length - 800);
+  applyLogToProgress(job.progress, line, job.agents);
   touch(job);
 }
 
@@ -115,9 +185,48 @@ function homePage(port: number): string {
       padding: 0.7rem 0.8rem;
       font: 0.95rem Consolas, "Cascadia Code", ui-monospace, monospace;
     }
-    input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+    input:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+    textarea#extra-instructions {
+      width: 100%;
+      min-height: 11rem;
+      resize: vertical;
+      background: #1e1e1e;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--ink);
+      padding: 0.7rem 0.8rem;
+      font: 0.9rem/1.45 Consolas, "Cascadia Code", ui-monospace, monospace;
+    }
+    textarea#extra-instructions:disabled { opacity: 0.65; cursor: not-allowed; }
+    .instr-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin: 0.45rem 0 0.75rem;
+    }
     .agents { display: flex; flex-wrap: wrap; gap: 0.75rem 1.1rem; margin: 0.9rem 0 1.1rem; }
     .agents label { display: inline-flex; align-items: center; gap: 0.4rem; text-transform: none; letter-spacing: 0; font-size: 0.92rem; color: var(--ink); font-weight: 500; cursor: pointer; margin: 0; }
+    .rule-toggles {
+      margin: 0.85rem 0 0.35rem;
+      padding: 0.75rem 0.85rem;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #1b2838;
+    }
+    .rule-toggles label {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.55rem;
+      text-transform: none;
+      letter-spacing: 0;
+      font-size: 0.92rem;
+      color: var(--ink);
+      font-weight: 500;
+      cursor: pointer;
+      margin: 0;
+    }
+    .rule-toggles input { margin-top: 0.2rem; flex-shrink: 0; }
+    .rule-toggles .hint { margin: 0.35rem 0 0 1.55rem; }
     button {
       border: 1px solid transparent;
       background: var(--accent);
@@ -135,18 +244,99 @@ function homePage(port: number): string {
     #status.done { color: #9cdcfe; }
     #status.error { color: var(--bad); }
     #links a { color: var(--accent); margin-right: 1rem; }
-    pre#logs {
+    .agent-progress {
+      display: grid;
+      gap: 0.55rem;
+      margin: 0.75rem 0 0.85rem;
+    }
+    .progress-shared {
+      color: var(--muted);
+      font-size: 0.82rem;
+      margin: 0 0 0.15rem;
+    }
+    .progress-track {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.55rem 0.7rem 0.65rem;
+      background: #1e1e1e;
+      cursor: pointer;
+      border-left: 4px solid #6e6e6e;
+    }
+    .progress-track:hover { border-color: #555; }
+    .progress-track.is-filter {
+      outline: 1px solid var(--accent);
+      background: #1a2430;
+    }
+    .progress-track.ag-cursor { border-left-color: #4fc1ff; }
+    .progress-track.ag-claude { border-left-color: #e8a87c; }
+    .progress-track.ag-command { border-left-color: #c9a0ff; }
+    .progress-track.ag-other { border-left-color: #89d185; }
+    .progress-top {
+      display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
+      gap: 0.35rem 0.75rem; margin-bottom: 0.35rem;
+    }
+    .progress-name { font-weight: 650; color: #fff; font-size: 0.92rem; }
+    .progress-meta { color: var(--muted); font-size: 0.78rem; font-family: Consolas, "Cascadia Code", ui-monospace, monospace; }
+    .bar {
+      height: 8px;
+      background: #2a2a2a;
+      border-radius: 999px;
+      overflow: hidden;
+      border: 1px solid #3a3a3a;
+    }
+    .bar > span {
+      display: block;
+      height: 100%;
+      width: 0%;
+      border-radius: 999px;
+      background: #6e6e6e;
+      transition: width 0.35s ease;
+    }
+    .progress-track.ag-cursor .bar > span { background: #4fc1ff; }
+    .progress-track.ag-claude .bar > span { background: #e8a87c; }
+    .progress-track.ag-command .bar > span { background: #c9a0ff; }
+    .progress-track.ag-other .bar > span { background: #89d185; }
+    .progress-track.is-done .bar > span { background: #3d7a45; }
+    .progress-track.is-error .bar > span { background: var(--bad); }
+    .pass-row {
+      display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.45rem;
+    }
+    .pass-chip {
+      font-size: 0.72rem;
+      font-weight: 650;
+      padding: 0.12rem 0.45rem;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      background: #252526;
+    }
+    .pass-chip.pending { opacity: 0.7; }
+    .pass-chip.running { color: var(--warn); border-color: #6e6a3a; background: #2a2818; }
+    .pass-chip.done { color: #89d185; border-color: #3d7a45; background: #1f2a1f; }
+    .pass-chip.error { color: #f14c4c; border-color: #8b2e2e; background: #2a1818; }
+    .progress-label { margin: 0.35rem 0 0; font-size: 0.8rem; color: var(--muted); }
+    .logs {
       margin: 0.5rem 0 0;
       max-height: 22rem;
       overflow: auto;
-      background: #1e1e1e;
+      background: #141414;
       border: 1px solid var(--line);
       border-radius: 6px;
-      padding: 0.75rem 0.9rem;
+      padding: 0.55rem 0.7rem;
       font: 0.82rem/1.45 Consolas, "Cascadia Code", ui-monospace, monospace;
-      white-space: pre-wrap;
-      color: #cccccc;
     }
+    .log-line { white-space: pre-wrap; word-break: break-word; color: #9a9a9a; }
+    .log-time { color: #6a6a6a; }
+    .log-tag { font-weight: 700; }
+    .log-line.ag-cursor { color: #b8e7ff; }
+    .log-line.ag-cursor .log-tag { color: #4fc1ff; }
+    .log-line.ag-claude { color: #f3d3b8; }
+    .log-line.ag-claude .log-tag { color: #e8a87c; }
+    .log-line.ag-command { color: #e2d2ff; }
+    .log-line.ag-command .log-tag { color: #c9a0ff; }
+    .log-line.ag-other { color: #c5e8c3; }
+    .log-line.ag-other .log-tag { color: #89d185; }
+    .log-filter-hint { color: var(--muted); font-size: 0.8rem; margin: 0.35rem 0 0; }
     ul.results { margin: 0.5rem 0 0; padding-left: 1.2rem; }
     ul.results .ok { color: #89d185; }
     ul.results .error { color: var(--bad); }
@@ -213,15 +403,57 @@ function homePage(port: number): string {
     #connect-banner.need { background: #2a1818; border-color: #8b2e2e; color: #f0c0c0; }
     #connect-banner.ready { background: #1f2a1f; border-color: #3d7a45; color: #c5e8c3; }
     #form.is-blocked { opacity: 0.55; pointer-events: none; }
+    .reviews-head {
+      display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
+      gap: 0.5rem; margin-bottom: 0.75rem;
+    }
+    .reviews-head h2 { margin: 0; font-size: 1.05rem; color: #fff; font-weight: 600; }
+    .review-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.65rem; }
+    .review-item {
+      border: 1px solid var(--line); border-radius: 8px; padding: 0.8rem 0.9rem;
+      background: #1e1e1e; display: grid; gap: 0.45rem;
+    }
+    .review-item .top {
+      display: flex; flex-wrap: wrap; gap: 0.45rem 0.75rem; align-items: center;
+    }
+    .review-item .title { color: #fff; font-weight: 600; margin: 0; font-size: 0.98rem; }
+    .review-item .meta { color: var(--muted); font-size: 0.82rem; margin: 0; }
+    .review-item .actions { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+    .review-item a.btn-link {
+      display: inline-block; font-size: 0.78rem; font-weight: 600;
+      color: var(--accent); text-decoration: none; border: 1px solid var(--line);
+      border-radius: 4px; padding: 0.25rem 0.5rem; background: #2d2d2d;
+    }
+    .review-item a.btn-link:hover { border-color: var(--accent); }
+    .review-item select {
+      background: #1e1e1e; color: var(--ink); border: 1px solid var(--line);
+      border-radius: 4px; padding: 0.25rem 0.4rem; font-size: 0.78rem;
+    }
+    .pill.running { color: var(--warn); border-color: #6e6a3a; background: #2a2818; }
+    .pill.needs_triage { color: #9cdcfe; border-color: #3a5a7a; background: #1a2430; }
+    .pill.awaiting_author { color: var(--warn); border-color: #6e6a3a; background: #2a2818; }
+    .pill.ready_to_verify { color: #c5a3ff; border-color: #5a3a7a; background: #221830; }
+    .pill.verified { color: #89d185; border-color: #3d7a45; background: #1f2a1f; }
+    .pill.cleared { color: #89d185; border-color: #3d7a45; background: #1f2a1f; }
+    .pill.incomplete { color: var(--muted); }
+    #reviews-empty { color: var(--muted); font-size: 0.9rem; margin: 0; }
   </style>
 </head>
 <body>
   <main>
     <h1>PRism</h1>
-    <p class="lede">See every angle before you merge. Connect a local AI agent, paste a GitHub PR URL, then run the review.</p>
+    <p class="lede">See every angle before you merge. Your local reviews stay listed here — jump between PRs, verify author updates, or start a new one.</p>
 
-    <section class="card" id="connect">
-      <div class="connect-head">
+    <section class="card" id="reviews-card">
+      <div class="reviews-head">
+        <h2>Your reviews</h2>
+        <button type="button" class="btn-secondary" id="btn-refresh-reviews">Refresh</button>
+      </div>
+      <p id="reviews-empty" hidden>No local reviews yet. Run one below.</p>
+      <ul class="review-list" id="review-list"></ul>
+    </section>
+
+    <section class="card" id="connect">      <div class="connect-head">
         <h2>Connect agents</h2>
         <div>
           <span class="pill warn" id="connect-pill">Checking…</span>
@@ -236,10 +468,23 @@ function homePage(port: number): string {
     <form class="card" id="form">
       <label for="pr">Pull request URL</label>
       <input id="pr" name="pr" type="url" required placeholder="https://github.com/org/repo/pull/123" autocomplete="off" />
-      <label style="margin-top:0.9rem">Use these agents</label>
+      <label style="margin-top:0.9rem" for="extra-instructions">Review instructions</label>
+      <p class="hint" style="margin:0 0 0.45rem">These ride along with every agent/pass for this run. Edit freely — defaults are naming-in-context + hard-review lenses. Cleared text = no extra section (built-in prompts/rules still apply).</p>
+      <textarea id="extra-instructions" name="extra-instructions" spellcheck="true"></textarea>
+      <div class="instr-toolbar">
+        <button type="button" class="btn-secondary" id="btn-reset-instructions">Reset to default</button>
+      </div>
+      <div class="rule-toggles">
+        <label for="require-decisions-md">
+          <input type="checkbox" id="require-decisions-md" />
+          <span>Require design-decision markdown on this PR</span>
+        </label>
+        <p class="hint">Team rule (optional). When checked, reviewers treat a missing/thin decisions <code>.md</code> as a <strong>blocker</strong>. Leave unchecked for generic / open-source reviews.</p>
+      </div>
+      <label style="margin-top:0.85rem">Use these agents</label>
       <div class="agents" id="agent-checks"></div>
       <button type="submit" id="submit">Run review</button>
-      <p class="hint">Agents run one after another (~3–6 min per specialist pass). Live CLI output and heartbeats appear in the log while a pass is running.</p>
+      <p class="hint">Agents run in parallel. Each agent runs 3 specialist passes at once (correctness, nitpick, devil's-advocate). Live CLI output is color-coded per agent.</p>
     </form>
 
     <section class="card" id="job-panel" hidden>
@@ -250,8 +495,10 @@ function homePage(port: number): string {
         <button type="button" class="btn-secondary" id="btn-restart" hidden>Restart</button>
       </div>
       <div id="links"></div>
+      <div id="agent-progress" class="agent-progress" hidden></div>
+      <p id="log-filter-hint" class="log-filter-hint" hidden></p>
       <ul class="results" id="results"></ul>
-      <pre id="logs"></pre>
+      <div id="logs" class="logs"></div>
     </section>
   </main>
   <script>
@@ -262,6 +509,8 @@ function homePage(port: number): string {
   const statusEl = document.getElementById("status");
   const metaEl = document.getElementById("job-meta");
   const logsEl = document.getElementById("logs");
+  const progressEl = document.getElementById("agent-progress");
+  const logFilterHint = document.getElementById("log-filter-hint");
   const linksEl = document.getElementById("links");
   const resultsEl = document.getElementById("results");
   const providersEl = document.getElementById("providers");
@@ -272,15 +521,202 @@ function homePage(port: number): string {
   const connectPill = document.getElementById("connect-pill");
   const connectBanner = document.getElementById("connect-banner");
   const recheckBtn = document.getElementById("btn-recheck");
+  const instructionsEl = document.getElementById("extra-instructions");
+  const resetInstrBtn = document.getElementById("btn-reset-instructions");
+  const requireDecisionsEl = document.getElementById("require-decisions-md");
+  const DEFAULT_EXTRA = ${JSON.stringify(DEFAULT_EXTRA_INSTRUCTIONS)};
+  const INSTR_STORAGE_KEY = ${JSON.stringify(EXTRA_INSTRUCTIONS_STORAGE_KEY)};
+  const REQUIRE_DECISIONS_STORAGE_KEY = ${JSON.stringify(REQUIRE_DECISIONS_MD_STORAGE_KEY)};
   let pollTimer = 0;
   let jobId = "";
   let lastPrRef = "";
   let lastAgents = [];
+  let lastExtraInstructions = "";
+  let lastRequireDecisionsMd = false;
   let readyIds = [];
+  let logFilter = "";
+
+  function agentClass(name) {
+    var key = String(name || "").toLowerCase();
+    if (key === "cursor") return "ag-cursor";
+    if (key === "claude-code") return "ag-claude";
+    if (key === "command-code") return "ag-command";
+    return "ag-other";
+  }
+
+  function escapeLog(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  function parseHubLogLine(line) {
+    var m = String(line || "").match(/^\\[(\\d{2}:\\d{2}:\\d{2})\\]\\s*(?:\\[([^\\]]+)\\]\\s*)?([\\s\\S]*)$/);
+    if (!m) return { time: "", agent: "", text: String(line || "") };
+    return { time: m[1] || "", agent: m[2] || "", text: m[3] || "" };
+  }
+
+  function trackPercent(track) {
+    if (!track) return 0;
+    if (track.status === "done") return 100;
+    if (track.status === "queued" || track.status === "skipped") return 0;
+    var passes = Array.isArray(track.passes) ? track.passes : [];
+    var total = Math.max(passes.length, 1);
+    var score = 0;
+    passes.forEach(function (pass) {
+      if (pass.status === "done" || pass.status === "error") score += 1;
+      else if (pass.status === "running") score += 0.45;
+    });
+    if (track.status === "running" && score === 0) return 8;
+    var pct = Math.round((score / total) * 100);
+    if (track.status === "error") return Math.min(99, Math.max(12, pct));
+    return Math.min(99, pct);
+  }
+
+  function elapsedLabel(track) {
+    var start = track && track.startedAt ? Date.parse(track.startedAt) : 0;
+    if (!start) return "";
+    var end = track.finishedAt ? Date.parse(track.finishedAt) : Date.now();
+    var sec = Math.max(0, Math.round((end - start) / 1000));
+    if (sec < 60) return sec + "s";
+    return Math.floor(sec / 60) + "m" + String(sec % 60).padStart(2, "0") + "s";
+  }
+
+  function renderLogs(job) {
+    var known = {};
+    (job.agents || []).forEach(function (name) { known[name] = true; });
+    var html = [];
+    (job.logs || []).forEach(function (line) {
+      var parsed = parseHubLogLine(line);
+      var agent = known[parsed.agent] ? parsed.agent : "";
+      if (logFilter && agent !== logFilter) return;
+      var cls = "log-line" + (agent ? " " + agentClass(agent) : "");
+      var tag = agent ? '<span class="log-tag">[' + escapeLog(agent) + ']</span> ' : "";
+      html.push(
+        '<div class="' + cls + '"><span class="log-time">' +
+        escapeLog(parsed.time ? parsed.time : "") +
+        "</span> " + tag + escapeLog(parsed.text) + "</div>"
+      );
+    });
+    logsEl.innerHTML = html.join("") || '<div class="log-line">Waiting for output…</div>';
+    logsEl.scrollTop = logsEl.scrollHeight;
+    if (logFilterHint) {
+      logFilterHint.hidden = !logFilter;
+      logFilterHint.textContent = logFilter
+        ? "Showing " + logFilter + " only — click the agent card again to show everyone."
+        : "";
+    }
+  }
+
+  function renderProgress(job) {
+    if (!progressEl) return;
+    var tracks = job.progress && Array.isArray(job.progress.agents) ? job.progress.agents : [];
+    if (!tracks.length) {
+      progressEl.hidden = true;
+      progressEl.innerHTML = "";
+      return;
+    }
+    progressEl.hidden = false;
+    var shared = job.progress && job.progress.sharedLabel
+      ? '<p class="progress-shared">' + escapeLog(job.progress.sharedLabel) + "</p>"
+      : "";
+    progressEl.innerHTML = shared + tracks.map(function (track) {
+      var pct = trackPercent(track);
+      var doneCount = (track.passes || []).filter(function (p) {
+        return p.status === "done" || p.status === "error";
+      }).length;
+      var total = (track.passes || []).length || 3;
+      var elapsed = elapsedLabel(track);
+      var chips = (track.passes || []).map(function (pass) {
+        var extra = "";
+        if (pass.status === "done" && pass.findings != null) extra = " · " + pass.findings;
+        return '<span class="pass-chip ' + escapeLog(pass.status) + '">' +
+          escapeLog(pass.id) + extra + "</span>";
+      }).join("");
+      var cls = "progress-track " + agentClass(track.agent);
+      if (track.status === "done") cls += " is-done";
+      if (track.status === "error") cls += " is-error";
+      if (logFilter === track.agent) cls += " is-filter";
+      return (
+        '<article class="' + cls + '" data-agent="' + escapeLog(track.agent) + '">' +
+          '<div class="progress-top">' +
+            '<span class="progress-name">' + escapeLog(track.agent) + "</span>" +
+            '<span class="progress-meta">' + doneCount + "/" + total +
+            (elapsed ? " · " + elapsed : "") + " · " + pct + "%</span>" +
+          "</div>" +
+          '<div class="bar"><span style="width:' + pct + '%"></span></div>' +
+          '<div class="pass-row">' + chips + "</div>" +
+          '<p class="progress-label">' + escapeLog(track.label || "") + "</p>" +
+        "</article>"
+      );
+    }).join("");
+    progressEl.querySelectorAll(".progress-track").forEach(function (node) {
+      node.addEventListener("click", function () {
+        var name = node.getAttribute("data-agent") || "";
+        logFilter = logFilter === name ? "" : name;
+        renderProgress(job);
+        renderLogs(job);
+      });
+    });
+  }
+
+  function loadInstructions() {
+    if (!(instructionsEl instanceof HTMLTextAreaElement)) return;
+    try {
+      var saved = localStorage.getItem(INSTR_STORAGE_KEY);
+      instructionsEl.value = saved != null ? saved : DEFAULT_EXTRA;
+    } catch (e) {
+      instructionsEl.value = DEFAULT_EXTRA;
+    }
+  }
+
+  function loadRequireDecisionsMd() {
+    if (!(requireDecisionsEl instanceof HTMLInputElement)) return;
+    try {
+      requireDecisionsEl.checked = localStorage.getItem(REQUIRE_DECISIONS_STORAGE_KEY) === "1";
+    } catch (e) {
+      requireDecisionsEl.checked = false;
+    }
+  }
+
+  function saveRequireDecisionsMd() {
+    if (!(requireDecisionsEl instanceof HTMLInputElement)) return;
+    try {
+      localStorage.setItem(
+        REQUIRE_DECISIONS_STORAGE_KEY,
+        requireDecisionsEl.checked ? "1" : "0",
+      );
+    } catch (e) { /* ignore */ }
+  }
+
+  function requireDecisionsMdEnabled() {
+    return requireDecisionsEl instanceof HTMLInputElement && requireDecisionsEl.checked;
+  }
+
+  function saveInstructions() {
+    if (!(instructionsEl instanceof HTMLTextAreaElement)) return;
+    try {
+      localStorage.setItem(INSTR_STORAGE_KEY, instructionsEl.value);
+    } catch (e) { /* ignore */ }
+  }
+
+  function currentInstructions() {
+    return instructionsEl instanceof HTMLTextAreaElement
+      ? instructionsEl.value
+      : DEFAULT_EXTRA;
+  }
+
+  /** Base instructions only — team rule flags are separate API fields. */
+  function instructionsForRun() {
+    return currentInstructions().trim();
+  }
 
   function setFormBlocked(blocked, message) {
     form.classList.toggle("is-blocked", Boolean(blocked));
     submit.disabled = Boolean(blocked);
+    if (instructionsEl) instructionsEl.disabled = Boolean(blocked) || Boolean(pollTimer);
+    if (resetInstrBtn) resetInstrBtn.disabled = Boolean(blocked) || Boolean(pollTimer);
     if (blocked) submit.textContent = message || "Connect an agent first";
     else if (!pollTimer) submit.textContent = "Run review";
   }
@@ -402,9 +838,17 @@ function homePage(port: number): string {
   function renderJob(job) {
     panel.hidden = false;
     statusEl.className = job.status;
-    statusEl.textContent = job.status.toUpperCase() + " · " + (job.prRef || "");
+    var errAgents = (job.results || []).filter(function (r) { return r.status === "error"; }).length;
+    var okAgents = (job.results || []).filter(function (r) { return r.status === "ok"; }).length;
+    if (job.status === "done" && errAgents > 0 && okAgents > 0) {
+      statusEl.textContent =
+        "DONE (partial) · " + okAgents + " ok / " + errAgents + " failed · " + (job.prRef || "");
+    } else {
+      statusEl.textContent = job.status.toUpperCase() + " · " + (job.prRef || "");
+    }
     var meta = "Job " + job.id;
     if (job.agents && job.agents.length) meta += " · agents: " + job.agents.join(", ");
+    if (job.requireDecisionsMd) meta += " · design-decision MD required";
     if (job.outputDir) meta += "\\nOutput: " + job.outputDir;
     else if (job.prNumber) meta += "\\nOutput: reviews/" + job.prNumber + "/";
     meta += "\\nWatch: http://127.0.0.1:" + location.port + "/#job=" + job.id;
@@ -419,6 +863,20 @@ function homePage(port: number): string {
     restartBtn.textContent = active ? "Force stop & restart" : "Restart";
     if (job.prRef) lastPrRef = job.prRef;
     if (job.agents && job.agents.length) lastAgents = job.agents.slice();
+    if (typeof job.extraInstructions === "string") {
+      lastExtraInstructions = job.extraInstructions;
+      // Don't overwrite the editable box with server-merged rule text.
+    }
+    if (typeof job.requireDecisionsMd === "boolean") {
+      lastRequireDecisionsMd = job.requireDecisionsMd;
+      if (requireDecisionsEl instanceof HTMLInputElement && !active) {
+        requireDecisionsEl.checked = job.requireDecisionsMd;
+      }
+    }
+
+    if (instructionsEl) instructionsEl.disabled = active;
+    if (resetInstrBtn) resetInstrBtn.disabled = active;
+    if (requireDecisionsEl) requireDecisionsEl.disabled = active;
 
     if (active) {
       submit.disabled = true;
@@ -428,8 +886,8 @@ function homePage(port: number): string {
       submit.textContent = "Run review";
     }
 
-    logsEl.textContent = (job.logs || []).join("\\n");
-    logsEl.scrollTop = logsEl.scrollHeight;
+    renderProgress(job);
+    renderLogs(job);
 
     resultsEl.innerHTML = "";
     (job.results || []).forEach(function (r) {
@@ -441,19 +899,32 @@ function homePage(port: number): string {
     });
 
     linksEl.innerHTML = "";
-    if (job.prNumber) {
+    var mergedReady = job.prNumber && (
+      job.mergedFindingCount != null ||
+      (job.results || []).some(function (r) { return r.status === "ok"; })
+    );
+    if (mergedReady) {
       const triage = document.createElement("a");
-      triage.href = "/reviews/" + job.prNumber + "/triage.html";
-      triage.target = "_blank";
-      triage.rel = "noopener";
-      triage.textContent = "Open triage";
+      triage.href = "/pr/" + job.prNumber + "/";
+      triage.textContent = active
+        ? "Open triage now (partial merge) · /pr/" + job.prNumber + "/"
+        : "Open triage · /pr/" + job.prNumber + "/";
       const list = document.createElement("a");
-      list.href = "/reviews/" + job.prNumber + "/final-review.html";
-      list.target = "_blank";
-      list.rel = "noopener";
+      list.href = "/pr/" + job.prNumber + "/final-review.html";
       list.textContent = "Open list";
       linksEl.appendChild(triage);
       linksEl.appendChild(list);
+      if (active && okAgents > 0 && okAgents < (job.agents || []).length) {
+        const note = document.createElement("p");
+        note.className = "hint";
+        note.style.margin = "0.45rem 0 0";
+        note.textContent =
+          okAgents + "/" + job.agents.length +
+          " agent(s) merged so far (" + (job.mergedFindingCount != null ? job.mergedFindingCount + " cards" : "see triage") +
+          "). You can start triaging — later agents add views onto the same cards when they find the same issue, rather than duplicating.";
+        linksEl.appendChild(note);
+      }
+      loadReviews();
     }
     if (job.error) {
       const err = document.createElement("p");
@@ -504,6 +975,9 @@ function homePage(port: number): string {
     }
     submit.disabled = true;
     submit.textContent = "Starting…";
+    if (instructionsEl) instructionsEl.disabled = true;
+    if (resetInstrBtn) resetInstrBtn.disabled = true;
+    if (requireDecisionsEl) requireDecisionsEl.disabled = true;
     panel.hidden = false;
     statusEl.className = "running";
     statusEl.textContent = "QUEUED";
@@ -512,11 +986,25 @@ function homePage(port: number): string {
     resultsEl.innerHTML = "";
     linksEl.innerHTML = "";
 
+    const extraInstructions = instructionsForRun();
+    const requireDecisionsMd = requireDecisionsMdEnabled();
+    saveInstructions();
+    saveRequireDecisionsMd();
+    lastExtraInstructions = extraInstructions;
+    lastRequireDecisionsMd = requireDecisionsMd;
+    lastPrRef = pr.value.trim();
+    lastAgents = agents.slice();
+
     try {
       const res = await fetch("/api/review", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prRef: pr.value.trim(), agents: agents }),
+        body: JSON.stringify({
+          prRef: pr.value.trim(),
+          agents: agents,
+          extraInstructions: extraInstructions,
+          requireDecisionsMd: requireDecisionsMd,
+        }),
       });
       const body = await res.json();
       if (res.status === 409 && body.jobId) {
@@ -531,6 +1019,9 @@ function homePage(port: number): string {
     } catch (e) {
       submit.disabled = false;
       submit.textContent = "Run review";
+      if (instructionsEl) instructionsEl.disabled = false;
+      if (resetInstrBtn) resetInstrBtn.disabled = false;
+      if (requireDecisionsEl) requireDecisionsEl.disabled = false;
       statusEl.className = "error";
       statusEl.textContent = e && e.message ? e.message : "Start failed";
     }
@@ -574,10 +1065,26 @@ function homePage(port: number): string {
       }
       submit.disabled = true;
       submit.textContent = "Restarting…";
+      if (instructionsEl) instructionsEl.disabled = true;
+      if (resetInstrBtn) resetInstrBtn.disabled = true;
+      if (requireDecisionsEl) requireDecisionsEl.disabled = true;
+      const extraInstructions =
+        instructionsForRun() || lastExtraInstructions || DEFAULT_EXTRA;
+      const requireDecisionsMd =
+        requireDecisionsMdEnabled() || lastRequireDecisionsMd;
+      saveInstructions();
+      saveRequireDecisionsMd();
+      lastExtraInstructions = extraInstructions;
+      lastRequireDecisionsMd = requireDecisionsMd;
       const res = await fetch("/api/review", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prRef: prRef, agents: agents }),
+        body: JSON.stringify({
+          prRef: prRef,
+          agents: agents,
+          extraInstructions: extraInstructions,
+          requireDecisionsMd: requireDecisionsMd,
+        }),
       });
       const body = await res.json();
       if (res.status === 409 && body.jobId) {
@@ -590,6 +1097,9 @@ function homePage(port: number): string {
     } catch (e) {
       submit.disabled = false;
       submit.textContent = "Run review";
+      if (instructionsEl) instructionsEl.disabled = false;
+      if (resetInstrBtn) resetInstrBtn.disabled = false;
+      if (requireDecisionsEl) requireDecisionsEl.disabled = false;
       alert(e && e.message ? e.message : "Restart failed");
     }
   });
@@ -605,8 +1115,165 @@ function homePage(port: number): string {
     });
   }
 
+  async function loadReviews() {
+    const listEl = document.getElementById("review-list");
+    const emptyEl = document.getElementById("reviews-empty");
+    if (!listEl) return;
+    try {
+      const res = await fetch("/api/reviews");
+      const body = await res.json();
+      const reviews = Array.isArray(body.reviews) ? body.reviews : [];
+      listEl.innerHTML = "";
+      if (emptyEl) emptyEl.hidden = reviews.length > 0;
+      reviews.forEach(function (r) {
+        const li = document.createElement("li");
+        li.className = "review-item";
+
+        const top = document.createElement("div");
+        top.className = "top";
+        const title = document.createElement("p");
+        title.className = "title";
+        title.textContent = "PR #" + r.prNumber + " — " + (r.title || "(untitled)");
+        const pill = document.createElement("span");
+        pill.className = "pill " + r.status;
+        pill.textContent = r.statusLabel || r.status;
+        top.appendChild(title);
+        top.appendChild(pill);
+
+        const meta = document.createElement("p");
+        meta.className = "meta";
+        var bits = [];
+        bits.push(r.openFindings + " open");
+        if (r.blockers) bits.push(r.blockers + " blocker");
+        if (r.majors) bits.push(r.majors + " major");
+        if (r.falseAlarms) bits.push(r.falseAlarms + " false alarm");
+        if (r.readiness) bits.push(r.readiness);
+        if (r.verify) {
+          bits.push(
+            "verify: " +
+              r.verify.resolved +
+              " resolved / " +
+              r.verify.still_open +
+              " open",
+          );
+        }
+        bits.push("updated " + String(r.updatedAt || "").replace("T", " ").slice(0, 16));
+        if (r.note) bits.push(r.note);
+        meta.textContent = bits.join(" · ");
+
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        const open = document.createElement("a");
+        open.className = "btn-link";
+        open.href = r.href || ("/pr/" + r.prNumber + "/");
+        open.textContent = "Open";
+        const list = document.createElement("a");
+        list.className = "btn-link";
+        list.href = r.listHref || ("/pr/" + r.prNumber + "/final-review.html");
+        list.textContent = "List";
+        if (r.hasVerifyReport) {
+          const v = document.createElement("a");
+          v.className = "btn-link";
+          v.href = r.verifyHref || ("/pr/" + r.prNumber + "/verify-report.html");
+          v.textContent = "Verify report";
+          actions.appendChild(v);
+        }
+        const statusSel = document.createElement("select");
+        statusSel.setAttribute("aria-label", "Mark status for PR " + r.prNumber);
+        [
+          ["", "Auto status"],
+          ["needs_triage", "Needs triage"],
+          ["awaiting_author", "Awaiting author"],
+          ["ready_to_verify", "Ready to verify"],
+        ].forEach(function (pair) {
+          const opt = document.createElement("option");
+          opt.value = pair[0];
+          opt.textContent = pair[1];
+          if (
+            (pair[0] === "" &&
+              ["awaiting_author", "ready_to_verify"].indexOf(r.status) === -1) ||
+            pair[0] === r.status
+          ) {
+            opt.selected = true;
+          }
+          statusSel.appendChild(opt);
+        });
+        statusSel.addEventListener("change", async function () {
+          try {
+            const res2 = await fetch("/api/reviews/" + r.prNumber, {
+              method: "PATCH",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                status: statusSel.value || null,
+              }),
+            });
+            const body2 = await res2.json();
+            if (!res2.ok) throw new Error(body2.error || ("HTTP " + res2.status));
+            loadReviews();
+          } catch (e) {
+            alert(e && e.message ? e.message : "Could not update status");
+          }
+        });
+        const removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.className = "danger";
+        removeBtn.textContent = "Remove";
+        removeBtn.addEventListener("click", async function () {
+          if (!confirm("Remove local review for PR #" + r.prNumber + "? This deletes reviews/" + r.prNumber + "/")) {
+            return;
+          }
+          try {
+            const res2 = await fetch("/api/reviews/" + r.prNumber, { method: "DELETE" });
+            const body2 = await res2.json();
+            if (!res2.ok) throw new Error(body2.error || ("HTTP " + res2.status));
+            loadReviews();
+          } catch (e) {
+            alert(e && e.message ? e.message : "Remove failed");
+          }
+        });
+        actions.appendChild(open);
+        actions.appendChild(list);
+        actions.appendChild(statusSel);
+        actions.appendChild(removeBtn);
+
+        li.appendChild(top);
+        li.appendChild(meta);
+        li.appendChild(actions);
+        listEl.appendChild(li);
+      });
+    } catch (e) {
+      if (emptyEl) {
+        emptyEl.hidden = false;
+        emptyEl.textContent = "Could not load reviews list.";
+      }
+    }
+  }
+
+  loadInstructions();
+  loadRequireDecisionsMd();
+  if (instructionsEl instanceof HTMLTextAreaElement) {
+    instructionsEl.addEventListener("change", saveInstructions);
+    instructionsEl.addEventListener("blur", saveInstructions);
+  }
+  if (requireDecisionsEl instanceof HTMLInputElement) {
+    requireDecisionsEl.addEventListener("change", saveRequireDecisionsMd);
+  }
+  if (resetInstrBtn) {
+    resetInstrBtn.addEventListener("click", function () {
+      if (!(instructionsEl instanceof HTMLTextAreaElement) || instructionsEl.disabled) return;
+      instructionsEl.value = DEFAULT_EXTRA;
+      saveInstructions();
+    });
+  }
   loadProviders();
+  loadReviews();
   attachActive();
+  var refreshBtn = document.getElementById("btn-refresh-reviews");
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", function () {
+      loadReviews();
+    });
+  }
 })();
   </script>
 </body>
@@ -614,8 +1281,22 @@ function homePage(port: number): string {
 }
 
 export async function serveUi(options: ServeUiOptions): Promise<void> {
-  const { repoRoot, config, port } = options;
+  const { repoRoot, config, port, focusPr } = options;
   let busyJobId: string | null = null;
+  let triageBusy = false;
+  const reviewsRoot = path.resolve(repoRoot, config.outputDir);
+
+  function triageCtrlFor(prNumber: number): TriageControllerOptions {
+    return {
+      repoRoot,
+      outputDir: path.join(reviewsRoot, String(prNumber)),
+      config,
+      isBusy: () => Boolean(busyJobId) || triageBusy,
+      setBusy: (busy) => {
+        triageBusy = busy;
+      },
+    };
+  }
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -628,6 +1309,129 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
           "cache-control": "no-store",
         });
         res.end(homePage(port));
+        return;
+      }
+
+      if (method === "GET" && url.pathname === "/api/reviews") {
+        const running = [...jobs.values()]
+          .filter((j) => j.status === "queued" || j.status === "running")
+          .map((j) => j.prNumber)
+          .filter((n): n is number => typeof n === "number");
+        const reviews = await listReviewSummaries(reviewsRoot, {
+          runningPrNumbers: running,
+        });
+        json(res, 200, { reviews });
+        return;
+      }
+
+      const reviewMatch = url.pathname.match(/^\/api\/reviews\/(\d+)$/);
+      if (reviewMatch) {
+        const prNumber = Number(reviewMatch[1]);
+        if (method === "DELETE") {
+          if (busyJobId) {
+            const busy = jobs.get(busyJobId);
+            if (busy?.prNumber === prNumber) {
+              json(res, 409, { error: "PR has a running job — force-stop it first" });
+              return;
+            }
+          }
+          await deleteReviewDir(reviewsRoot, prNumber);
+          json(res, 200, { ok: true, prNumber });
+          return;
+        }
+        if (method === "PATCH") {
+          const raw = await readBody(req);
+          let body: { status?: ReviewHubMeta["status"] | null; note?: string };
+          try {
+            body = JSON.parse(raw) as typeof body;
+          } catch {
+            json(res, 400, { error: "Invalid JSON body" });
+            return;
+          }
+          const allowed = new Set([
+            "awaiting_author",
+            "ready_to_verify",
+            "needs_triage",
+          ]);
+          if (
+            body.status !== undefined &&
+            body.status !== null &&
+            !allowed.has(body.status)
+          ) {
+            json(res, 400, {
+              error:
+                "status must be awaiting_author|ready_to_verify|needs_triage|null",
+            });
+            return;
+          }
+          const meta = await setReviewHubStatus(reviewsRoot, prNumber, {
+            ...(body.status !== undefined ? { status: body.status } : {}),
+            ...(body.note !== undefined ? { note: body.note } : {}),
+          });
+          json(res, 200, { ok: true, meta });
+          return;
+        }
+      }
+
+      // Prefer /pr/<n>/… ; keep /reviews/<n>/… as redirect
+      if (method === "GET" && url.pathname.startsWith("/reviews/")) {
+        const rest = url.pathname.slice("/reviews/".length);
+        res.writeHead(302, { location: `/pr/${rest}${url.search}` });
+        res.end();
+        return;
+      }
+
+      const prMount = url.pathname.match(/^\/pr\/(\d+)(\/.*)?$/);
+      if (prMount) {
+        const prNumber = Number(prMount[1]);
+        const rest = prMount[2] || "/";
+        const outputDir = path.join(reviewsRoot, String(prNumber));
+
+        if (rest === "/api" || rest.startsWith("/api/")) {
+          const apiPath = rest.slice("/api".length) || "/";
+          try {
+            const handled = await handleTriageApi(
+              triageCtrlFor(prNumber),
+              method,
+              apiPath,
+              req,
+              res,
+            );
+            if (!handled) json(res, 404, { error: "Not found" });
+          } catch (error) {
+            triageBusy = false;
+            const message =
+              error instanceof Error ? error.message : String(error);
+            json(res, 500, { error: message });
+          }
+          return;
+        }
+
+        if (method === "GET") {
+          if (rest === "/" || rest === "/triage.html") {
+            try {
+              await renderReviewFromDir(outputDir);
+            } catch {
+              /* serve whatever is on disk */
+            }
+            await serveReviewStatic(res, path.join(outputDir, "triage.html"));
+            return;
+          }
+          const allowed = new Set([
+            "/final-review.html",
+            "/verify-report.html",
+            "/findings.json",
+            "/run.json",
+            "/verify-report.json",
+            "/final-review.md",
+          ]);
+          if (allowed.has(rest)) {
+            await serveReviewStatic(res, path.join(outputDir, rest.slice(1)));
+            return;
+          }
+        }
+
+        json(res, 404, { error: "Not found" });
         return;
       }
 
@@ -684,6 +1488,13 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
           );
           job.status = "cancelled";
           job.error = "Force stopped by user.";
+          for (const track of job.progress.agents) {
+            if (track.status === "running" || track.status === "queued") {
+              track.status = "error";
+              track.label = "Stopped";
+              track.finishedAt = new Date().toISOString();
+            }
+          }
           if (busyJobId === job.id) busyJobId = null;
           touch(job);
         } else {
@@ -708,10 +1519,12 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
       }
 
       if (method === "POST" && url.pathname === "/api/review") {
-        if (busyJobId) {
-          const busy = jobs.get(busyJobId);
+        if (busyJobId || triageBusy) {
+          const busy = busyJobId ? jobs.get(busyJobId) : undefined;
           json(res, 409, {
-            error: "A review is already running. Attaching to that job.",
+            error: busyJobId
+              ? "A review is already running. Attaching to that job."
+              : "A triage/verify job is running. Wait for it to finish.",
             jobId: busyJobId,
             prRef: busy?.prRef,
             status: busy?.status,
@@ -722,7 +1535,12 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
         }
 
         const raw = await readBody(req);
-        let body: { prRef?: string; agents?: string[] };
+        let body: {
+          prRef?: string;
+          agents?: string[];
+          extraInstructions?: string;
+          requireDecisionsMd?: boolean;
+        };
         try {
           body = JSON.parse(raw) as typeof body;
         } catch {
@@ -741,6 +1559,16 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
             ? body.agents.map(String)
             : [...DEFAULT_MULTI_AGENTS];
 
+        const requireDecisionsMd = Boolean(body.requireDecisionsMd);
+        const baseInstructions = (body.extraInstructions ?? "").trim();
+        const extraInstructions = requireDecisionsMd
+          ? baseInstructions.includes("design-decision docs required")
+            ? baseInstructions
+            : [baseInstructions, REQUIRE_DESIGN_DECISIONS_MD_RULE]
+                .filter(Boolean)
+                .join("\n\n")
+          : baseInstructions;
+
         const job: Job = {
           id: randomUUID(),
           prRef,
@@ -749,8 +1577,13 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
           logs: [],
+          progress: initJobProgress(agents),
           results: [],
           cancelRequested: false,
+          requireDecisionsMd,
+          ...(extraInstructions
+            ? { extraInstructions }
+            : {}),
         };
         jobs.set(job.id, job);
         busyJobId = job.id;
@@ -762,26 +1595,90 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
           touch(job);
           appendLog(job, `Starting multi-agent review for ${prRef}`);
           appendLog(job, `Agents: ${agents.join(", ")}`);
+          if (requireDecisionsMd) {
+            appendLog(
+              job,
+              "Team rule ON: require design-decision markdown (missing/thin → blocker)",
+            );
+          }
+          if (extraInstructions.trim()) {
+            appendLog(
+              job,
+              `Extra instructions: ${extraInstructions.trim().slice(0, 160)}${extraInstructions.trim().length > 160 ? "…" : ""}`,
+            );
+          }
           try {
             const result = await runAllCliAgents({
               prRef,
               repoRoot,
               config,
               agents,
+              ...(extraInstructions.trim()
+                ? { extraInstructions: extraInstructions.trim() }
+                : {}),
               log: (line) => appendLog(job, line),
               shouldCancel: () => job.cancelRequested,
+              onProgress: (event) => {
+                if (event.prNumber) job.prNumber = event.prNumber;
+                if (event.outputDir) job.outputDir = event.outputDir;
+                if (event.mergedFindingCount != null) {
+                  job.mergedFindingCount = event.mergedFindingCount;
+                }
+                if (event.result) {
+                  const idx = job.results.findIndex(
+                    (row) => row.agent === event.result!.agent,
+                  );
+                  if (idx >= 0) job.results[idx] = event.result;
+                  else job.results.push(event.result);
+                  if (event.result.status === "ok" && job.prNumber) {
+                    const done = job.results.filter((row) => row.status === "ok")
+                      .length;
+                    const waiting = job.agents.filter(
+                      (name) => !job.results.some((row) => row.agent === name),
+                    );
+                    const more =
+                      waiting.length > 0
+                        ? ` ${waiting.join(" + ")} still running — similar findings collapse into one card as they finish.`
+                        : "";
+                    appendLog(
+                      job,
+                      `✓ ${event.result.agent} merged into triage (${event.mergedFindingCount ?? "?"} finding(s) from ${event.runCount ?? done} agent run(s)). Open /pr/${job.prNumber}/ now.${more}`,
+                    );
+                  }
+                }
+                touch(job);
+              },
             });
             job.prNumber = result.prNumber;
             job.outputDir = result.outputDir;
             job.mergedFindingCount = result.mergedFindingCount;
             job.results = result.results;
+            syncTracksFromResults(job.progress, result.results);
             job.status = result.cancelled ? "cancelled" : "done";
             appendLog(
               job,
               result.cancelled
                 ? `Stopped. Partial merge at reviews/${result.prNumber}/ (${result.mergedFindingCount} findings)`
-                : `Merged findings: ${result.mergedFindingCount} → reviews/${result.prNumber}/`,
+                : `Merged findings: ${result.mergedFindingCount} → /pr/${result.prNumber}/`,
             );
+            const ok = result.results.filter((r) => r.status === "ok").length;
+            const err = result.results.filter((r) => r.status === "error").length;
+            if (err > 0 && ok > 0) {
+              appendLog(
+                job,
+                `Partial success: ${ok} agent(s) ok, ${err} failed — review still finished with what we have.`,
+              );
+            }
+            for (const r of result.results) {
+              if (r.status === "error") {
+                appendLog(job, `  ✗ ${r.agent}: ${r.detail}`);
+              } else if (r.status === "ok") {
+                appendLog(
+                  job,
+                  `  ✓ ${r.agent}${r.rawFindingCount != null ? ` (${r.rawFindingCount} raw)` : ""}`,
+                );
+              }
+            }
           } catch (error) {
             job.status = "error";
             job.error =
@@ -793,40 +1690,10 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
           }
         })();
 
-        json(res, 202, { jobId: job.id, watchUrl: `http://127.0.0.1:${port}/#job=${job.id}` });
-        return;
-      }
-
-      // Static review artifacts for convenience after a run
-      if (method === "GET" && url.pathname.startsWith("/reviews/")) {
-        const rel = url.pathname.slice("/reviews/".length);
-        if (rel.includes("..")) {
-          json(res, 400, { error: "Invalid path" });
-          return;
-        }
-        const filePath = path.resolve(
-          repoRoot,
-          config.outputDir,
-          ...rel.split("/"),
-        );
-        const root = path.resolve(repoRoot, config.outputDir);
-        if (!filePath.startsWith(root)) {
-          json(res, 400, { error: "Invalid path" });
-          return;
-        }
-        try {
-          const { readFile } = await import("node:fs/promises");
-          const body = await readFile(filePath);
-          const type = filePath.endsWith(".html")
-            ? "text/html; charset=utf-8"
-            : filePath.endsWith(".json")
-              ? "application/json; charset=utf-8"
-              : "text/plain; charset=utf-8";
-          res.writeHead(200, { "content-type": type, "cache-control": "no-store" });
-          res.end(body);
-        } catch {
-          json(res, 404, { error: "Not found" });
-        }
+        json(res, 202, {
+          jobId: job.id,
+          watchUrl: `http://127.0.0.1:${port}/#job=${job.id}`,
+        });
         return;
       }
 
@@ -842,8 +1709,11 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
     server.listen(port, "127.0.0.1", () => resolve());
   });
 
-  console.log("████ PRism · serve-ui");
-  console.log(`Open: http://127.0.0.1:${port}/`);
-  console.log("Paste a PR URL and run cursor + claude-code + command-code.");
+  console.log("████ PRism · hub");
+  console.log(`Home:   http://127.0.0.1:${port}/`);
+  if (focusPr) {
+    console.log(`Focus:  http://127.0.0.1:${port}/pr/${focusPr}/`);
+  }
+  console.log("Each PR lives at /pr/<n>/ (triage, list, verify).");
   console.log("Ctrl+C to stop.");
 }

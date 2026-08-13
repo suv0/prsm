@@ -1,29 +1,30 @@
 # Agents — PRism
 
-This repo is **agent-first**. Cursor, Claude Code, and Command Code AI are the models.
+This repo is **agent-first**. Cursor, Claude Code, and Command Code are the models.
 Product: **PRism** · CLI: **`prsm`** (`review-pr` alias) · packages: `@review-os/*` (internal).
 
-## Command
+## Easiest path (clone / other users)
 
-```text
-prsm <github-pr-url>
-# or
-review-pr <github-pr-url>
+```bash
+pnpm install && pnpm build
+pnpm prsm --doctor
+pnpm prsm --serve-ui --port 8788
 ```
 
-## Process
+Open http://127.0.0.1:8788/ → **Connect agents** → paste a PR URL. Need `gh auth login` plus any one agent CLI.
+
+## Chat command
+
+```text
+prsm https://github.com/org/repo/pull/123
+# or
+review-pr https://github.com/org/repo/pull/123
+```
 
 Follow `.cursor/skills/review-pr/SKILL.md`.
 
-Summary:
+Hands-off CLI: `pnpm prsm --run <url>` (available agents in parallel).
 
-1. Prepare with `pnpm prsm <url>`
-2. Fill `reviews/<n>/passes/*.findings.json` using `agent/*.brief.md`
-3. Finalize with `pnpm prsm --finalize <n>`
-4. Deliver via `pnpm prsm --serve-ui` (paste PR URL, run all 3 agents) or `pnpm prsm --serve <n>`
+Triage lives at `http://127.0.0.1:8788/pr/<n>/` (Teach me, Recheck, Verify). Disk refresh: `pnpm prsm --render <n>`.
 
-Or hands-off CLI: `pnpm prsm --run <url>` / `--provider command-code <url>`.
-
-Recheck from the triage UI (provider dropdown + notes). Disk-only refresh: `pnpm prsm --render <n>`.
-
-No API keys required for the default path (local CLI providers).
+No PRism API key for the default path. Never auto-post to GitHub.

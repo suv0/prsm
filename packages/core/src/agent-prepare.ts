@@ -37,6 +37,9 @@ export async function writeAgentWorkspace(options: {
     const rules = await readOptional(
       path.join(options.repoRoot, "rules", `${passId}.md`),
     );
+    const extraInstructions = (
+      await readOptional(path.join(options.outputDir, "extra-instructions.md"))
+    ).trim();
 
     const brief = [
       `# Agent brief — ${passId}`,
@@ -64,6 +67,16 @@ export async function writeAgentWorkspace(options: {
   "prefer `severity: suggestion` + category `documented-debt` (follow-up reminder),",
   "not a harsh blocker. Acknowledge the author's reasoning in the comment.",
   "",
+  ...(extraInstructions
+    ? [
+        "## Extra reviewer instructions",
+        "",
+        "Follow these for this entire review:",
+        "",
+        extraInstructions,
+        "",
+      ]
+    : []),
   "## Read these",
       "",
       `- prompts/${passId}.md`,
@@ -71,6 +84,9 @@ export async function writeAgentWorkspace(options: {
       `- reviews/${options.run.prNumber}/knowledge/*`,
       `- reviews/${options.run.prNumber}/diff.patch (focus on code files)`,
       `- reviews/${options.run.prNumber}/changed-files.md`,
+      ...(extraInstructions
+        ? [`- reviews/${options.run.prNumber}/extra-instructions.md`]
+        : []),
       "",
       "## Focus files (prefer these)",
       "",

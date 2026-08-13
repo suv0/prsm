@@ -16,6 +16,7 @@ export {
   createCliLogBridge,
   formatCliLogLine,
   commandExists,
+  execCli,
 } from "./run-cli.js";
 export {
   generatePrOverview,

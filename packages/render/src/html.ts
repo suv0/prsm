@@ -1,4 +1,5 @@
 import type { Finding, ReviewRun } from "@review-os/schemas";
+import { githubFileUrl } from "./github-file-link.js";
 import { renderOverviewHtml } from "./overview.js";
 
 function escapeHtml(value: string): string {
@@ -265,7 +266,12 @@ function buildAgentPacket(finding: Finding, prNumber: number): string {
   ].join("\n");
 }
 
-function cardHtml(finding: Finding, index: number, prNumber: number): string {
+function cardHtml(
+  finding: Finding,
+  index: number,
+  prNumber: number,
+  link?: { prUrl?: string; head?: string },
+): string {
   const isPraise = finding.kind === "praise";
   const title = isPraise
     ? `Praise ${index}`
@@ -273,12 +279,22 @@ function cardHtml(finding: Finding, index: number, prNumber: number): string {
   const language = finding.language || "ts";
   const findingId = encodeURIComponent(finding.id);
   const agentPacket = encodeCopyPayload(buildAgentPacket(finding, prNumber));
+  const href = githubFileUrl({
+    ...(link?.prUrl !== undefined ? { prUrl: link.prUrl } : {}),
+    ...(link?.head !== undefined ? { head: link.head } : {}),
+    file: finding.file,
+    line: finding.line,
+    ...(finding.endLine !== undefined ? { endLine: finding.endLine } : {}),
+  });
+  const metaInner = href
+    ? `<a class="file-link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer"><code>${escapeHtml(finding.file)}</code> · Line ${escapeHtml(lineLabel(finding))}</a>`
+    : `<code>${escapeHtml(finding.file)}</code> · Line ${escapeHtml(lineLabel(finding))}`;
 
   return `<article class="card" data-finding-id="${findingId}" data-original-comment="${encodeCopyPayload(finding.reviewComment)}" data-agent-packet="${agentPacket}" data-severity="${escapeHtml(finding.severity)}" data-index="${index}">
   <header class="card-header">
     <div>
       <h2>${escapeHtml(title)}</h2>
-      <p class="meta"><code>${escapeHtml(finding.file)}</code> · Line ${escapeHtml(lineLabel(finding))}</p>
+      <p class="meta">${metaInner}</p>
     </div>
     <div class="card-actions">
       <button type="button" data-action="copy-agent" data-label="Copy for agent">Copy for agent</button>
@@ -587,9 +603,13 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
   const praise = run.findings.filter((f) => f.kind === "praise");
   const judge = run.judge;
 
+  const link = {
+    ...(run.prUrl !== undefined ? { prUrl: run.prUrl } : {}),
+    ...(run.head !== undefined ? { head: run.head } : {}),
+  };
   const cards = [
-    ...issues.map((f, i) => cardHtml(f, i + 1, run.prNumber)),
-    ...praise.map((f, i) => cardHtml(f, i + 1, run.prNumber)),
+    ...issues.map((f, i) => cardHtml(f, i + 1, run.prNumber, link)),
+    ...praise.map((f, i) => cardHtml(f, i + 1, run.prNumber, link)),
   ].join("\n");
 
   return `<!doctype html>
@@ -689,6 +709,9 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
     }
     .card-actions { display: flex; gap: 0.4rem; flex-shrink: 0; }
     .meta { margin: 0; color: var(--muted); font-size: 0.9rem; }
+    .meta a.file-link { color: var(--accent); text-decoration: none; }
+    .meta a.file-link:hover { color: var(--accent-hover); text-decoration: underline; }
+    .meta a.file-link code { color: inherit; }
     .meta code {
       color: #9cdcfe;
       background: #2d2d2d;

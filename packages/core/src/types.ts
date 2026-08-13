@@ -25,6 +25,8 @@ export interface PassContext {
   knowledge: Record<string, string>;
   rules: Record<string, string>;
   companyStandards?: string;
+  /** Free-text guidance from the hub (or extra-instructions.md) for this run. */
+  extraInstructions?: string;
   plan?: ReviewPlan;
   /** Optional progress logger (serve-ui / CLI). */
   log?: (line: string) => void;
@@ -57,6 +59,10 @@ export interface Pass {
 export interface PipelineResult {
   run: ReviewRun;
   outputDir: string;
+  /** Pass ids that threw (provider/tool failures). */
+  failedPasses: string[];
+  /** True when a credit/quota/auth failure stopped remaining passes. */
+  abortedForProviderLimit: boolean;
 }
 
 export type ReviewRenderer = (

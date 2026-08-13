@@ -97,10 +97,19 @@ export function formatCliLogLine(
   if (!trimmed) return null;
 
   const prefix = stream === "stderr" ? "cli!" : "cli";
+
+  // Collapse large JSON blobs and skip JSON fragment lines (pretty-printed findings).
   const looksJsonHeavy =
-    (trimmed.startsWith("[") || trimmed.startsWith("{")) && trimmed.length > 160;
+    (trimmed.startsWith("[") || trimmed.startsWith("{")) && trimmed.length > 120;
   if (looksJsonHeavy) {
     return `  · ${prefix}: …JSON (${trimmed.length} chars)`;
+  }
+  if (
+    /^[{}\[\],]$/.test(trimmed) ||
+    /^"[^"]+"\s*:/.test(trimmed) ||
+    /^…JSON\b/.test(trimmed)
+  ) {
+    return null;
   }
 
   const max = 220;
@@ -116,11 +125,42 @@ export function createCliLogBridge(
   if (!log) return {};
 
   let emitted = 0;
-  const maxLines = 100;
+  const maxLines = 40;
   let mutedNotice = false;
+  let hidingFindingsJson = false;
 
   return {
     onLine(stream, line) {
+      const trimmed = line.trim();
+      if (
+        !hidingFindingsJson &&
+        (trimmed.startsWith("```json") ||
+          (trimmed.startsWith("[") &&
+            (trimmed.includes('"kind"') || trimmed === "[")))
+      ) {
+        hidingFindingsJson = true;
+        if (emitted < maxLines) {
+          emitted += 1;
+          log(`  · cli: …findings JSON (hiding dump)`);
+        }
+        return;
+      }
+      if (hidingFindingsJson) {
+        // Drop pretty-printed finding dumps; keep rare stderr outside JSON shape.
+        if (
+          stream === "stderr" &&
+          !trimmed.startsWith("{") &&
+          !trimmed.startsWith('"') &&
+          !trimmed.startsWith("}") &&
+          !trimmed.startsWith("[") &&
+          !trimmed.startsWith("]") &&
+          !trimmed.startsWith("```")
+        ) {
+          // fall through
+        } else {
+          return;
+        }
+      }
       if (emitted >= maxLines) {
         if (!mutedNotice) {
           mutedNotice = true;
@@ -160,19 +200,26 @@ export function execCli(
   const isWin = process.platform === "win32";
 
   return new Promise((resolve, reject) => {
+    // Claude Code (and some other CLIs) treat piped stdin as "prompt incoming".
+    // Node's default stdio is pipe, so they wait ~3s, warn, and often exit 1:
+    // "no stdin data received in 3s, proceeding without it".
+    // Prompts are passed with -p, so stdin must be closed / NUL.
+    const stdio = ["ignore", "pipe", "pipe"] as const;
     const child = isWin
       ? spawn(
-          [command, ...args].map(quoteForWinShell).join(" "),
+          `${[command, ...args].map(quoteForWinShell).join(" ")} < NUL`,
           {
             cwd: options.cwd,
             shell: true,
             windowsHide: true,
+            stdio: [...stdio],
           },
         )
       : spawn(command, args, {
           cwd: options.cwd,
           shell: false,
           windowsHide: true,
+          stdio: [...stdio],
         });
 
     activeChildren.add(child);

@@ -1,4 +1,5 @@
 import type { Finding, JudgeResult } from "@review-os/schemas";
+import { alignFindingsSuggestionPaths } from "./finding-consistency.js";
 
 const SEVERITY_RANK: Record<Finding["severity"], number> = {
   blocker: 6,
@@ -108,7 +109,7 @@ export function finalizeFindings(findings: Finding[]): {
   findings: Finding[];
   judge: JudgeResult;
 } {
-  const deduped = dedupeFindings(findings);
+  const deduped = alignFindingsSuggestionPaths(dedupeFindings(findings));
   return {
     findings: deduped,
     judge: buildJudgeResult(deduped),

@@ -36,6 +36,94 @@ export type FindingView = z.infer<typeof FindingViewSchema>;
 export const FindingDispositionSchema = z.enum(["open", "false_alarm"]);
 export type FindingDisposition = z.infer<typeof FindingDispositionSchema>;
 
+export const RecheckActionSchema = z.enum(["stand", "update", "false_alarm"]);
+export type RecheckAction = z.infer<typeof RecheckActionSchema>;
+
+/** One triage “Recheck this finding” interaction (newest first in the array). */
+export const RecheckEntrySchema = z.object({
+  id: z.string().min(1),
+  createdAt: z.string().min(1),
+  provider: z.string().min(1),
+  /** Exact notes the reviewer typed. */
+  userAsked: z.string().min(1),
+  /** One short line: how the model understood the ask. */
+  understood: z.string().min(1),
+  /** One short line: the verdict / finding takeaway. */
+  conclusion: z.string().min(1),
+  action: RecheckActionSchema,
+  /**
+   * Plain line-by-line teaching for the reviewer (not GitHub paste).
+   * Numbered short steps: what the code does, what's wrong, why the fix/comment fit.
+   */
+  teachMe: z.string().optional(),
+  /** Optional longer reasoning (not for GitHub paste). */
+  details: z.string().optional(),
+  /** Suggested paste-ready PR comment — never auto-applied. */
+  suggestedComment: z.string().optional(),
+});
+export type RecheckEntry = z.infer<typeof RecheckEntrySchema>;
+
+export const VerifyStatusSchema = z.enum([
+  "resolved",
+  "needs_look",
+  "still_open",
+  "accepted",
+]);
+export type VerifyStatus = z.infer<typeof VerifyStatusSchema>;
+
+export const FindingVerificationSchema = z.object({
+  status: VerifyStatusSchema,
+  summary: z.string().min(1),
+  verifiedAt: z.string().min(1),
+  provider: z.string().min(1),
+  betterThanSuggested: z.boolean().default(false),
+  followUpComment: z.string().optional(),
+  threadMatched: z.boolean().default(false),
+  authorReplyExcerpt: z.string().optional(),
+});
+export type FindingVerification = z.infer<typeof FindingVerificationSchema>;
+
+export const VerifyItemSchema = z.object({
+  findingId: z.string().min(1),
+  file: z.string().min(1),
+  line: z.number().int().positive(),
+  issueSimple: z.string().min(1),
+  /** Rollup judgment (conservative across agents). */
+  verification: FindingVerificationSchema,
+  /** Per-agent judgments kept so disagreements stay visible. */
+  byAgent: z.array(FindingVerificationSchema).default([]),
+});
+export type VerifyItem = z.infer<typeof VerifyItemSchema>;
+
+export const VerifyReportSchema = z.object({
+  prNumber: z.number().int().positive(),
+  prUrl: z.string().optional(),
+  title: z.string().optional(),
+  createdAt: z.string().min(1),
+  /** Comma-joined for older UI; prefer `providers`. */
+  provider: z.string().min(1),
+  providers: z.array(z.string().min(1)).default([]),
+  counts: z.object({
+    resolved: z.number().int().nonnegative(),
+    needs_look: z.number().int().nonnegative(),
+    still_open: z.number().int().nonnegative(),
+    accepted: z.number().int().nonnegative(),
+    skipped: z.number().int().nonnegative(),
+  }),
+  items: z.array(VerifyItemSchema),
+  unmatchedThreads: z
+    .array(
+      z.object({
+        id: z.string(),
+        file: z.string().optional(),
+        line: z.number().optional(),
+        excerpt: z.string(),
+      }),
+    )
+    .default([]),
+});
+export type VerifyReport = z.infer<typeof VerifyReportSchema>;
+
 export const FindingSchema = z.object({
   id: z.string().min(1),
   kind: FindingKindSchema,
@@ -60,6 +148,12 @@ export const FindingSchema = z.object({
   /** Kept on disk when recheck shows it is not a real issue (never delete). */
   disposition: FindingDispositionSchema.default("open"),
   falseAlarmNote: z.string().optional(),
+  /** Rollup of latest verify pass (conservative across agents). */
+  verification: FindingVerificationSchema.optional(),
+  /** Latest verify judgment per agent (re-runs replace that agent's entry). */
+  verifications: z.array(FindingVerificationSchema).default([]),
+  /** Recheck history from triage (newest first). */
+  rechecks: z.array(RecheckEntrySchema).default([]),
 });
 export type Finding = z.infer<typeof FindingSchema>;
 

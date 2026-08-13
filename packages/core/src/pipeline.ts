@@ -13,6 +13,7 @@ import { filterFindingsByEvidence } from "./evidence.js";
 import { finalizeFindings } from "./finalize.js";
 import { buildKnowledgePack } from "./knowledge.js";
 import { planReview } from "./planner.js";
+import { isFatalProviderError } from "./provider-errors.js";
 import { detectSignals } from "./signals.js";
 import type { Pass, PipelineResult, Provider, PassContext } from "./types.js";
 
@@ -41,6 +42,8 @@ export interface RunPipelineOptions {
   knowledge?: Record<string, string>;
   rules?: Record<string, string>;
   companyStandards?: string;
+  /** Hub/CLI free-text guidance applied to every specialist pass. */
+  extraInstructions?: string;
   cwd?: string;
   /** Optional raw diff written by the renderer beside the review. */
   diffText?: string;
@@ -50,6 +53,16 @@ export interface RunPipelineOptions {
   overview?: PrOverview;
   /** Progress lines (serve-ui / CLI). Defaults to console.log. */
   log?: (line: string) => void;
+  /**
+   * Override the review output directory (default: `<cwd>/<config.outputDir>/<prNumber>`).
+   * Used for parallel multi-agent isolation under `.work/<agent>/`.
+   */
+  outputDirOverride?: string;
+  /**
+   * Run specialist passes concurrently (blind passes are independent).
+   * Default true for live reviews; prepare/load-only ignores this.
+   */
+  parallelPasses?: boolean;
 }
 
 function countFindings(findings: Finding[]): JudgeResult["counts"] {
@@ -132,11 +145,14 @@ export async function runPipeline(
     knowledge = {},
     rules = {},
     companyStandards,
+    extraInstructions,
     cwd = process.cwd(),
     diffText,
     plan: providedPlan,
     overview,
     log: logOption,
+    outputDirOverride,
+    parallelPasses = true,
   } = options;
 
   const log = logOption ?? ((line: string) => console.log(line));
@@ -192,7 +208,9 @@ export async function runPipeline(
     ? []
     : deps.passes.filter((p) => plan.selectedPasses.includes(p.id));
 
-  const outputDir = path.resolve(cwd, config.outputDir, String(prNumber));
+  const outputDir =
+    outputDirOverride ??
+    path.resolve(cwd, config.outputDir, String(prNumber));
 
   const context: PassContext = {
     config,
@@ -209,43 +227,131 @@ export async function runPipeline(
     knowledge: mergedKnowledge,
     rules,
     ...(companyStandards !== undefined ? { companyStandards } : {}),
+    ...(extraInstructions !== undefined ? { extraInstructions } : {}),
     plan,
     log,
   };
 
-  const passResults = [];
-  log(
-    `Specialist passes: ${selectedPasses.map((p) => p.id).join(" → ") || "(none)"}`,
-  );
-  for (let i = 0; i < selectedPasses.length; i += 1) {
-    const pass = selectedPasses[i]!;
-    const passConfig = config.passes.find((p) => p.id === pass.id);
-    const providerId = passConfig?.provider ?? config.providers.default;
-    const provider = deps.providers.get(providerId);
-    if (!provider) {
-      throw new Error(`Provider not registered: ${providerId}`);
-    }
-    const startedAt = Date.now();
+  const passResults: Awaited<ReturnType<Pass["run"]>>[] = [];
+  const failedPasses: string[] = [];
+  let abortedForProviderLimit = false;
+  const runParallel =
+    parallelPasses && selectedPasses.length > 1 && !loadOnly && !demo;
+
+  if (runParallel) {
     log(
-      `▶ pass ${i + 1}/${selectedPasses.length}: ${pass.id} via ${providerId}…`,
+      `Specialist passes (parallel): ${selectedPasses.map((p) => p.id).join(" · ") || "(none)"}`,
     );
-    try {
-      const result = await pass.run(context, provider);
-      const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
-      log(
-        `✓ pass ${pass.id} done — ${result.findings.length} finding(s) in ${seconds}s`,
-      );
-      passResults.push(result);
-    } catch (error) {
-      const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
-      const detail = error instanceof Error ? error.message : String(error);
-      log(`✗ pass ${pass.id} failed after ${seconds}s — ${detail}`);
-      log(`  → keeping earlier passes; continuing with remaining specialists`);
+    const settled = await Promise.all(
+      selectedPasses.map(async (pass, i) => {
+        const passConfig = config.passes.find((p) => p.id === pass.id);
+        const providerId = passConfig?.provider ?? config.providers.default;
+        const provider = deps.providers.get(providerId);
+        if (!provider) {
+          throw new Error(`Provider not registered: ${providerId}`);
+        }
+        const startedAt = Date.now();
+        log(
+          `▶ pass ${i + 1}/${selectedPasses.length}: ${pass.id} via ${providerId}…`,
+        );
+        try {
+          const result = await pass.run(context, provider);
+          const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+          log(
+            `✓ pass ${pass.id} done — ${result.findings.length} finding(s) in ${seconds}s`,
+          );
+          return { ok: true as const, result, providerId };
+        } catch (error) {
+          const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+          const detail = error instanceof Error ? error.message : String(error);
+          log(`✗ pass ${pass.id} failed after ${seconds}s — ${detail}`);
+          return { ok: false as const, detail, providerId, passId: pass.id };
+        }
+      }),
+    );
+
+    for (let i = 0; i < settled.length; i += 1) {
+      const item = settled[i]!;
+      if (item.ok) {
+        passResults.push(item.result);
+        continue;
+      }
+      failedPasses.push(item.passId);
       passResults.push({
-        passId: pass.id,
-        provider: providerId,
+        passId: item.passId,
+        provider: item.providerId,
         findings: [],
       });
+      if (isFatalProviderError(item.detail)) {
+        abortedForProviderLimit = true;
+      }
+    }
+    if (abortedForProviderLimit) {
+      log(
+        `  → at least one pass hit a credit/quota/auth limit (parallel run kept other pass results)`,
+      );
+    } else if (failedPasses.length > 0) {
+      log(
+        `  → keeping successful parallel passes; ${failedPasses.length} failed`,
+      );
+    }
+  } else {
+    log(
+      `Specialist passes: ${selectedPasses.map((p) => p.id).join(" → ") || "(none)"}`,
+    );
+    for (let i = 0; i < selectedPasses.length; i += 1) {
+      const pass = selectedPasses[i]!;
+      const passConfig = config.passes.find((p) => p.id === pass.id);
+      const providerId = passConfig?.provider ?? config.providers.default;
+      const provider = deps.providers.get(providerId);
+      if (!provider) {
+        throw new Error(`Provider not registered: ${providerId}`);
+      }
+      const startedAt = Date.now();
+      log(
+        `▶ pass ${i + 1}/${selectedPasses.length}: ${pass.id} via ${providerId}…`,
+      );
+      try {
+        const result = await pass.run(context, provider);
+        const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+        log(
+          `✓ pass ${pass.id} done — ${result.findings.length} finding(s) in ${seconds}s`,
+        );
+        passResults.push(result);
+      } catch (error) {
+        const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+        const detail = error instanceof Error ? error.message : String(error);
+        failedPasses.push(pass.id);
+        log(`✗ pass ${pass.id} failed after ${seconds}s — ${detail}`);
+        passResults.push({
+          passId: pass.id,
+          provider: providerId,
+          findings: [],
+        });
+        if (isFatalProviderError(detail)) {
+          abortedForProviderLimit = true;
+          log(
+            `  → ${providerId} hit a credit/quota/auth limit — skipping remaining passes for this agent (other agents still run)`,
+          );
+          for (let j = i + 1; j < selectedPasses.length; j += 1) {
+            const skipped = selectedPasses[j]!;
+            const skippedProvider =
+              config.passes.find((p) => p.id === skipped.id)?.provider ??
+              config.providers.default;
+            log(
+              `⊘ pass ${skipped.id} skipped — provider limit on ${providerId}`,
+            );
+            failedPasses.push(skipped.id);
+            passResults.push({
+              passId: skipped.id,
+              provider: skippedProvider,
+              findings: [],
+            });
+          }
+          break;
+        }
+        log(`  → keeping earlier passes; continuing with remaining specialists`);
+      }
     }
   }
 
@@ -291,7 +397,24 @@ export async function runPipeline(
     passResults,
   };
 
+  if (
+    selectedPasses.length > 0 &&
+    failedPasses.length === selectedPasses.length &&
+    findings.length === 0
+  ) {
+    throw new Error(
+      abortedForProviderLimit
+        ? `All specialist passes failed for this agent (credit/quota/auth). Remaining agents will still run.`
+        : `All specialist passes failed for this agent (no findings). Remaining agents will still run.`,
+    );
+  }
+
   await deps.render(run, outputDir, diffText);
 
-  return { run, outputDir };
+  return {
+    run,
+    outputDir,
+    failedPasses,
+    abortedForProviderLimit,
+  };
 }

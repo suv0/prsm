@@ -1,11 +1,8 @@
 import { access } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import {
-  commandExists,
-  createProviderRegistry,
-  listAvailableProviders,
-} from "@review-os/providers";
+import { commandExists } from "@review-os/providers";
+import { AGENT_CATALOG } from "./agent-catalog.js";
 
 export type DoctorCheck = {
   id: string;
@@ -127,55 +124,37 @@ export async function runDoctor(options: {
     });
   }
 
-  const agentOk = await commandExists("agent");
-  const claudeOk = await commandExists("claude");
-  const commandCodeOk = await commandExists("command-code");
+  for (const entry of AGENT_CATALOG) {
+    const found = await commandExists(entry.command);
+    checks.push({
+      id: entry.id,
+      ok: found,
+      level: "recommended",
+      label: `${entry.name} (${entry.command})`,
+      detail: found
+        ? `found — ${entry.loginHint}`
+        : `not found — install: ${entry.installUrl} then ${entry.loginHint}`,
+    });
+  }
 
-  checks.push({
-    id: "cursor",
-    ok: agentOk,
-    level: "recommended",
-    label: "Cursor Agent CLI (agent)",
-    detail: agentOk
-      ? "found — use agent login or CURSOR_API_KEY if runs fail"
-      : "optional — install Cursor Agent CLI for --provider cursor",
-  });
-  checks.push({
-    id: "claude-code",
-    ok: claudeOk,
-    level: "recommended",
-    label: "Claude Code CLI (claude)",
-    detail: claudeOk
-      ? "found"
-      : "optional — install Claude Code for --provider claude-code",
-  });
-  checks.push({
-    id: "command-code",
-    ok: commandCodeOk,
-    level: "recommended",
-    label: "Command Code CLI (command-code)",
-    detail: commandCodeOk
-      ? "found"
-      : "optional — install Command Code for --provider command-code",
-  });
-
-  const registry = createProviderRegistry();
-  const available = await listAvailableProviders(registry);
-  const usable = available.filter((id) =>
-    ["cursor", "claude-code", "command-code", "demo"].includes(id),
+  const hasLive = checks.some(
+    (check) =>
+      AGENT_CATALOG.some((entry) => entry.id === check.id) && check.ok,
   );
-  const hasLive =
-    usable.includes("cursor") ||
-    usable.includes("claude-code") ||
-    usable.includes("command-code");
   checks.push({
     id: "providers",
     ok: hasLive,
     level: "recommended",
-    label: "At least one live review provider",
+    label: "At least one live review agent",
     detail: hasLive
-      ? `available: ${usable.join(", ")}`
-      : "No cursor/claude-code/command-code detected — only demo will work",
+      ? `ready: ${checks
+          .filter(
+            (check) =>
+              AGENT_CATALOG.some((entry) => entry.id === check.id) && check.ok,
+          )
+          .map((check) => check.id)
+          .join(", ")}`
+      : "No agent CLI detected — `pnpm demo` still works. Install any one CLI above, then: pnpm prsm --serve-ui",
   });
 
   const requiredFailed = checks.some((c) => c.level === "required" && !c.ok);
@@ -192,9 +171,18 @@ export function printDoctorReport(checks: DoctorCheck[], ok: boolean): void {
   }
   console.log("");
   if (ok) {
-    console.log("Ready enough to try a review:");
-    console.log("  pnpm prsm --serve-ui --port 8788");
-    console.log("  pnpm prsm --run <github-pr-url>");
+    const hasLive = checks.some((c) => c.id === "providers" && c.ok);
+    if (hasLive) {
+      console.log("Ready to review:");
+      console.log("  pnpm prsm --serve-ui --port 8788");
+      console.log("  → http://127.0.0.1:8788/  (paste a PR URL, pick agents)");
+    } else {
+      console.log("Build + GitHub look good. You still need one AI CLI:");
+      console.log("  1. Install any one agent listed above (Cursor / Claude Code / Command Code)");
+      console.log("  2. Finish that product's login");
+      console.log("  3. pnpm prsm --serve-ui --port 8788 → Connect agents → Re-check");
+      console.log("  Smoke test without an agent: pnpm demo");
+    }
   } else {
     console.log("Fix the ✗ required items, then re-run: pnpm prsm --doctor");
   }

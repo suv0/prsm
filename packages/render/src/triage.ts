@@ -1,4 +1,6 @@
-import type { Finding, ReviewRun } from "@review-os/schemas";
+import type { Finding, RecheckEntry, ReviewRun } from "@review-os/schemas";
+import { normalizeTeachMeContent } from "@review-os/core";
+import { githubFileUrl } from "./github-file-link.js";
 import { renderOverviewHtml } from "./overview.js";
 import { sortFindingsForTriage } from "./sort-findings.js";
 
@@ -21,6 +23,7 @@ type TriageFinding = {
   file: string;
   line: number;
   endLine?: number;
+  githubUrl?: string;
   severity: Finding["severity"];
   category: string;
   disposition: "open" | "false_alarm";
@@ -32,9 +35,20 @@ type TriageFinding = {
   currentCode: string;
   reviewComment: string;
   language: string;
+  rechecks: RecheckEntry[];
 };
 
-function toTriageFinding(finding: Finding): TriageFinding {
+function toTriageFinding(
+  finding: Finding,
+  link?: { prUrl?: string; head?: string },
+): TriageFinding {
+  const githubUrl = githubFileUrl({
+    ...(link?.prUrl !== undefined ? { prUrl: link.prUrl } : {}),
+    ...(link?.head !== undefined ? { head: link.head } : {}),
+    file: finding.file,
+    line: finding.line,
+    ...(finding.endLine !== undefined ? { endLine: finding.endLine } : {}),
+  });
   return {
     id: finding.id,
     storageId: encodeURIComponent(finding.id),
@@ -42,6 +56,7 @@ function toTriageFinding(finding: Finding): TriageFinding {
     file: finding.file,
     line: finding.line,
     ...(finding.endLine !== undefined ? { endLine: finding.endLine } : {}),
+    ...(githubUrl ? { githubUrl } : {}),
     severity: finding.severity,
     category: finding.category,
     disposition: finding.disposition ?? "open",
@@ -55,6 +70,13 @@ function toTriageFinding(finding: Finding): TriageFinding {
     currentCode: finding.currentCode,
     reviewComment: finding.reviewComment,
     language: finding.language || "ts",
+    rechecks: Array.isArray(finding.rechecks)
+      ? finding.rechecks.map((entry) => {
+          if (!entry.teachMe?.trim()) return entry;
+          const teachMe = normalizeTeachMeContent(entry.teachMe);
+          return teachMe === entry.teachMe ? entry : { ...entry, teachMe };
+        })
+      : [],
   };
 }
 
@@ -67,11 +89,23 @@ function clientScript(): string {
   const PR = data.prNumber;
   const STORAGE_KEY = "review-os:pr-" + PR + ":triage:v1";
   const SERVED = location.protocol === "http:" || location.protocol === "https:";
+  // Works for /pr/22/, /pr/22/triage.html, and legacy single-PR /
+  const BASE = (function () {
+    var p = location.pathname || "/";
+    if (p.endsWith("/triage.html")) p = p.slice(0, -"/triage.html".length);
+    if (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
+    return p === "/" ? "" : p;
+  })();
+  function apiUrl(path) {
+    return BASE + "/api" + path;
+  }
   let all = data.findings.slice();
   let queueIndex = 0;
   let showResolved = false;
   let showFalseAlarms = false;
   let rechecking = false;
+  let verifying = false;
+  let paintedFindingId = "";
 
   const els = {
     empty: document.getElementById("empty"),
@@ -88,6 +122,9 @@ function clientScript(): string {
     better: document.getElementById("better-code"),
     comment: document.getElementById("simple-comment"),
     original: document.getElementById("original-comment"),
+    teachSimple: document.getElementById("teach-simple"),
+    teachBtn: document.getElementById("btn-teach-me"),
+    copyTeachBtn: document.getElementById("btn-copy-teach"),
     notes: document.getElementById("notes"),
     flash: document.getElementById("flash"),
     resolveBtn: document.getElementById("btn-resolve"),
@@ -97,10 +134,23 @@ function clientScript(): string {
     showResolved: document.getElementById("show-resolved"),
     showFalseAlarms: document.getElementById("show-false-alarms"),
     provider: document.getElementById("provider"),
+    providerTeach: document.getElementById("provider-teach"),
     recheckBtn: document.getElementById("btn-recheck"),
-    serveHint: document.getElementById("serve-hint"),
     recheckStatus: document.getElementById("recheck-status"),
+    recheckLogs: document.getElementById("recheck-logs"),
+    recheckLive: document.getElementById("recheck-live"),
+    recheckPanel: document.getElementById("recheck-live-panel"),
+    verifyBtn: document.getElementById("btn-verify"),
+    verifyStatus: document.getElementById("verify-status"),
+    verifyLive: document.getElementById("verify-live"),
+    verifyLogs: document.getElementById("verify-logs"),
+    verifyPanel: document.getElementById("verify-panel"),
+    serveHint: document.getElementById("serve-hint"),
   };
+
+  let verifyPollTimer = 0;
+  let verifyJobId = "";
+  let lastVerifyLogCount = 0;
 
   let flashTimer = 0;
 
@@ -157,6 +207,30 @@ function clientScript(): string {
     return String(f.line);
   }
 
+  function buildSimpleTeach(f) {
+    var latest = Array.isArray(f.rechecks) && f.rechecks[0] && f.rechecks[0].teachMe
+      ? String(f.rechecks[0].teachMe).trim()
+      : "";
+    if (latest) return latest;
+    return [
+      "Yes — look at " + f.file + " around line " + lineLabel(f) + ".",
+      "",
+      "What's going wrong: " + (f.issueSimple || ""),
+      "",
+      "Why it matters: " + (f.whyWeak || ""),
+      "",
+      "Smallest fix: " + (f.howToFix || ""),
+      "",
+      "A natural PR comment: " + (f.reviewComment || ""),
+    ].join("\\n");
+  }
+
+  function paintTeachSimple(f) {
+    if (!els.teachSimple) return;
+    var text = buildSimpleTeach(f);
+    els.teachSimple.innerHTML = formatTeachHtml(text, f);
+  }
+
   function current() {
     var q = queue();
     if (!q.length) return null;
@@ -189,6 +263,7 @@ function clientScript(): string {
       file: f.file,
       line: f.line,
       endLine: f.endLine,
+      githubUrl: f.githubUrl,
       severity: f.severity,
       category: f.category,
       disposition: f.disposition || "open",
@@ -200,6 +275,7 @@ function clientScript(): string {
       currentCode: f.currentCode,
       reviewComment: f.reviewComment,
       language: f.language || "ts",
+      rechecks: Array.isArray(f.rechecks) ? f.rechecks : [],
     };
   }
 
@@ -261,12 +337,20 @@ function clientScript(): string {
 
   function renderEditor(host, options) {
     if (!host) return;
+    host.innerHTML = buildEditorHtml(options);
+  }
+
+  /** Shared VS Code-like block used by Current code + Teach me fences. */
+  function buildEditorHtml(options) {
     var code = String(options.code || "").replace(/\\r\\n/g, "\\n");
-    var lines = code.split("\\n");
-    var start = Math.max(1, options.startLine || 1);
+    if (!code.trim()) return "";
+    var lines = code.replace(/\\n$/, "").split("\\n");
+    var start = Math.max(1, Number(options.startLine) || 1);
     var lang = options.language || "ts";
     var file = options.file || "file";
     var name = fileName(file);
+    var compact = Boolean(options.compact);
+    var end = start + Math.max(0, lines.length - 1);
     var rows = lines.map(function (line, index) {
       var n = start + index;
       return '<div class="editor-row">' +
@@ -274,17 +358,42 @@ function clientScript(): string {
         '<span class="editor-line">' + highlightLine(line) + "</span>" +
         "</div>";
     }).join("");
-    host.innerHTML =
-      '<div class="editor">' +
+    return (
+      '<div class="editor' + (compact ? " editor-compact" : "") + '">' +
         '<div class="editor-titlebar">' +
           '<div class="editor-tab active" title="' + esc(file) + '">' + esc(name) + "</div>" +
-          '<div class="editor-lang">' + esc(lang) + "</div>" +
+          '<div class="editor-lang">' + esc(lang) + (lines.length > 1 ? " · L" + start + "–" + end : " · L" + start) + "</div>" +
         "</div>" +
-        '<div class="editor-breadcrumb">' + esc(file) + ":" + start + "</div>" +
+        '<div class="editor-breadcrumb">' + esc(file) + ":" + start + (lines.length > 1 ? "–" + end : "") + "</div>" +
         '<div class="editor-body">' +
           '<div class="editor-code" role="region" aria-label="Code">' + rows + "</div>" +
         "</div>" +
-      "</div>";
+      "</div>"
+    );
+  }
+
+  function inferSnippetStartLine(code, finding, explicitStart) {
+    if (explicitStart && explicitStart > 0) return explicitStart;
+    if (!finding) return 1;
+    var base = Math.max(1, Number(finding.line) || 1);
+    var current = String(finding.currentCode || "").replace(/\\r\\n/g, "\\n");
+    var snippet = String(code || "").replace(/\\r\\n/g, "\\n").replace(/\\n$/, "");
+    if (current && snippet) {
+      var idx = current.indexOf(snippet);
+      if (idx >= 0) {
+        return base + current.slice(0, idx).split("\\n").length - 1;
+      }
+      var first = snippet.split("\\n").map(function (l) { return l.trim(); }).find(Boolean);
+      if (first) {
+        var curLines = current.split("\\n");
+        for (var i = 0; i < curLines.length; i += 1) {
+          if (curLines[i].indexOf(first) !== -1 || curLines[i].trim() === first) {
+            return base + i;
+          }
+        }
+      }
+    }
+    return base;
   }
 
   function paint() {
@@ -327,14 +436,25 @@ function clientScript(): string {
         : (f.kind === "praise" ? "Praise" : "Finding") + " — " + f.severity;
     }
     if (els.meta) {
-      els.meta.innerHTML = "<code></code> · Line " + lineLabel(f);
-      els.meta.querySelector("code").textContent = f.file;
+      var label = lineLabel(f);
+      if (f.githubUrl) {
+        els.meta.innerHTML =
+          '<a class="file-link" target="_blank" rel="noopener noreferrer"><code></code> · Line ' +
+          label +
+          "</a>";
+        els.meta.querySelector("a").href = f.githubUrl;
+        els.meta.querySelector("code").textContent = f.file;
+      } else {
+        els.meta.innerHTML = "<code></code> · Line " + label;
+        els.meta.querySelector("code").textContent = f.file;
+      }
     }
     if (els.issue) {
       els.issue.textContent = falseAlarm && f.falseAlarmNote
         ? f.falseAlarmNote
         : f.issueSimple;
     }
+    paintTeachSimple(f);
     renderEditor(els.code, {
       code: f.currentCode,
       file: f.file,
@@ -355,6 +475,12 @@ function clientScript(): string {
     }
     if (els.notes) {
       els.notes.value = state.notes[f.storageId] || "";
+      els.notes.disabled = rechecking;
+    }
+    if (els.provider) els.provider.disabled = rechecking || !SERVED;
+    if (f.id !== paintedFindingId) {
+      paintedFindingId = f.id;
+      if (!rechecking) clearRecheckLivePanel();
     }
     if (els.resolveBtn) els.resolveBtn.hidden = resolved;
     if (els.restoreBtn) els.restoreBtn.hidden = !resolved;
@@ -365,6 +491,315 @@ function clientScript(): string {
       els.panel.classList.toggle("is-false-alarm", falseAlarm);
     }
     if (els.recheckBtn) els.recheckBtn.disabled = !SERVED || rechecking;
+    if (els.teachBtn) els.teachBtn.disabled = !SERVED || rechecking;
+    if (els.provider) els.provider.disabled = rechecking || !SERVED;
+    if (els.providerTeach) els.providerTeach.disabled = rechecking || !SERVED;
+    renderRecheckHistory(f);
+  }
+
+  function renderRecheckHistory(f) {
+    var host = document.getElementById("recheck-history");
+    if (!host) return;
+    var items = Array.isArray(f.rechecks) ? f.rechecks : [];
+    if (!items.length) {
+      host.innerHTML = '<p class="hint">No rechecks yet. Hit <strong>Teach me</strong> for a plain walkthrough, or type a question and hit Recheck.</p>';
+      return;
+    }
+    host.innerHTML = items.map(function (entry, idx) {
+      var teach = entry.teachMe
+        ? '<div class="recheck-teach"><div class="teach-head"><p class="hint" style="margin:0"><strong>Teach me</strong></p><button type="button" class="btn-copy-teach-entry" data-idx="' + idx + '">Copy lesson</button></div><div class="teach-prose recheck-teach-body"></div></div>'
+        : "";
+      var details = entry.details
+        ? '<details><summary>More details</summary><p class="recheck-details"></p></details>'
+        : "";
+      var suggest = entry.suggestedComment
+        ? '<div class="recheck-suggest"><p class="hint">Suggested GitHub comment <strong>(for the PR author — Copy to paste on the PR)</strong></p><pre class="recheck-suggest-body"></pre><div class="toolbar"><button type="button" class="btn-copy-suggest" data-idx="' + idx + '">Copy</button><button type="button" class="btn-secondary btn-apply-suggest" data-idx="' + idx + '">Use in paste box</button></div></div>'
+        : "";
+      var latest = idx === 0 ? ' is-latest' : '';
+      return (
+        '<article class="recheck-entry' + latest + '">' +
+          '<header><span class="badge">' + escapeText(entry.action || "") + '</span> ' +
+          (idx === 0 ? '<span class="badge badge-latest">Latest</span> ' : '') +
+          '<span class="meta">' + escapeText(entry.provider || "") + ' · ' + escapeText(String(entry.createdAt || "").replace("T", " ").slice(0, 16)) + '</span></header>' +
+          teach +
+          '<p><strong>You asked</strong><br><span class="recheck-asked"></span></p>' +
+          '<p><strong>In short</strong><br><span class="recheck-conclusion"></span></p>' +
+          details +
+          suggest +
+        '</article>'
+      );
+    }).join("");
+    var nodes = host.querySelectorAll(".recheck-entry");
+    items.forEach(function (entry, idx) {
+      var node = nodes[idx];
+      if (!node) return;
+      var asked = node.querySelector(".recheck-asked");
+      var conclusion = node.querySelector(".recheck-conclusion");
+      if (asked) asked.textContent = entry.userAsked || "";
+      if (conclusion) conclusion.textContent = entry.conclusion || "";
+      var teachBody = node.querySelector(".recheck-teach-body");
+      if (teachBody && entry.teachMe) teachBody.innerHTML = formatTeachHtml(entry.teachMe, f);
+      var det = node.querySelector(".recheck-details");
+      if (det && entry.details) det.textContent = entry.details;
+      var sug = node.querySelector(".recheck-suggest-body");
+      if (sug && entry.suggestedComment) sug.textContent = entry.suggestedComment;
+    });
+    host.querySelectorAll(".btn-copy-teach-entry").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var i = Number(btn.getAttribute("data-idx"));
+        var entry = items[i];
+        if (!entry || !entry.teachMe) return;
+        copyText("Lesson", entry.teachMe);
+      });
+    });
+    host.querySelectorAll(".btn-copy-suggest").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var i = Number(btn.getAttribute("data-idx"));
+        var entry = items[i];
+        if (!entry || !entry.suggestedComment) return;
+        copyText("Suggested comment", entry.suggestedComment);
+      });
+    });
+    host.querySelectorAll(".btn-apply-suggest").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var i = Number(btn.getAttribute("data-idx"));
+        var entry = items[i];
+        if (!entry || !entry.suggestedComment || !els.comment) return;
+        els.comment.value = entry.suggestedComment;
+        state.comments[f.storageId] = entry.suggestedComment;
+        saveState(state);
+        showFlash("Loaded into paste box above (edit freely, then Copy comment)");
+      });
+    });
+  }
+
+  function escapeText(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  /** Lightweight markdown for Teach me lessons (headings, fences → editor, bold, code). */
+  function formatTeachHtml(raw, finding) {
+    var tick = String.fromCharCode(96);
+    var text = recoverTeachMeDump(String(raw || "").replace(/\\r\\n/g, "\\n"));
+    // Fenced code at line starts only — avoids mid-JSON garbage matching fences.
+    // lang optional, optional :startLine (e.g. ts:108). Skip json fences (not lesson snippets).
+    var fenceRe = new RegExp(
+      "(?:^|\\n)" +
+        tick + tick + tick +
+        "([\\\\w-]*)(?::(\\\\d+))?(?:[^\\\\n]*)\\\\n([\\\\s\\\\S]*?)" +
+        tick + tick + tick,
+      "g"
+    );
+    var parts = [];
+    var last = 0;
+    var m;
+    while ((m = fenceRe.exec(text)) !== null) {
+      var lang = (m[1] || "").toLowerCase();
+      if (lang === "json") continue;
+      var matchStart = m.index;
+      if (text.charAt(m.index) === "\\n") matchStart = m.index + 1;
+      if (matchStart > last) {
+        parts.push({ type: "text", value: text.slice(last, matchStart) });
+      }
+      parts.push({
+        type: "code",
+        lang: (lang || (finding && finding.language) || "ts").toLowerCase(),
+        startLine: m[2] ? Number(m[2]) : 0,
+        value: m[3] || "",
+      });
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) parts.push({ type: "text", value: text.slice(last) });
+    if (!parts.length) parts.push({ type: "text", value: text });
+
+    function recoverTeachMeDump(input) {
+      var src = String(input || "");
+      if (src.indexOf('"teachMeLines"') < 0) return src;
+      var key = src.indexOf('"teachMeLines"');
+      var bracket = src.indexOf("[", key);
+      if (bracket < 0) return src;
+      var depth = 0;
+      var inStr = false;
+      var esc = false;
+      for (var i = bracket; i < src.length; i += 1) {
+        var c = src.charAt(i);
+        if (inStr) {
+          if (esc) { esc = false; continue; }
+          if (c === "\\\\") { esc = true; continue; }
+          if (c === '"') inStr = false;
+          continue;
+        }
+        if (c === '"') { inStr = true; continue; }
+        if (c === "[") depth += 1;
+        if (c === "]") {
+          depth -= 1;
+          if (depth === 0) {
+            try {
+              var arr = JSON.parse(src.slice(bracket, i + 1));
+              if (
+                Array.isArray(arr) &&
+                arr.length > 0 &&
+                arr.every(function (item) { return typeof item === "string"; })
+              ) {
+                return arr.join("\\n");
+              }
+            } catch (_err) {
+              return src;
+            }
+            return src;
+          }
+        }
+      }
+      return src;
+    }
+
+    function lineHintFromText(chunk) {
+      var hits = String(chunk || "").match(/\\b(?:[Ll]ines?|L)\\s*(\\d{1,5})\\b/g);
+      if (!hits || !hits.length) return 0;
+      var lastHit = hits[hits.length - 1];
+      var num = lastHit.match(/(\\d{1,5})/);
+      return num ? Number(num[1]) : 0;
+    }
+
+    function formatInlineBits(escaped) {
+      var html = escaped;
+      html = html.replace(/\\*\\*([^*]+)\\*\\*/g, "<strong>$1</strong>");
+      html = html.replace(/(^|[^*])\\*([^*]+)\\*(?!\\*)/g, "$1<em>$2</em>");
+      html = html.replace(
+        new RegExp(tick + "([^" + tick + "\\\\n]+)" + tick, "g"),
+        "<code>$1</code>"
+      );
+      return html;
+    }
+
+    function formatInline(chunk) {
+      var html = escapeText(chunk);
+      html = formatInlineBits(html);
+      html = html.replace(/^(#{1,3})\\s+(.+)$/gm, function (_all, hashes, title) {
+        var level = Math.min(3, hashes.length);
+        return "<h" + (level + 2) + ' class="teach-h">' + title + "</h" + (level + 2) + ">";
+      });
+      html = html.replace(/^---$/gm, '<hr class="teach-hr" />');
+      html = html.replace(
+        /^(Input:|Output:|What happens:|Snippet:)(\\s+)/gm,
+        '<span class="teach-label">$1</span>$2'
+      );
+      return html;
+    }
+
+    function splitTableCells(line) {
+      var t = String(line || "").trim();
+      if (t.charAt(0) === "|") t = t.slice(1);
+      if (t.charAt(t.length - 1) === "|") t = t.slice(0, -1);
+      return t.split("|").map(function (c) { return c.trim(); });
+    }
+
+    function isTableSeparator(line) {
+      var cells = splitTableCells(line);
+      if (cells.length < 2) return false;
+      return cells.every(function (c) {
+        return /^:?-{3,}:?$/.test(c);
+      });
+    }
+
+    function isTableRow(line) {
+      var t = String(line || "").trim();
+      return t.indexOf("|") !== -1;
+    }
+
+    function renderMarkdownTable(tableLines) {
+      if (!tableLines || tableLines.length < 2) return "";
+      var header = splitTableCells(tableLines[0]);
+      var bodyLines = tableLines.slice(1).filter(function (line) {
+        return !isTableSeparator(line);
+      });
+      var thead =
+        "<thead><tr>" +
+        header.map(function (cell) {
+          return "<th>" + formatInlineBits(escapeText(cell)) + "</th>";
+        }).join("") +
+        "</tr></thead>";
+      var tbody =
+        "<tbody>" +
+        bodyLines.map(function (line) {
+          return (
+            "<tr>" +
+            splitTableCells(line).map(function (cell) {
+              return "<td>" + formatInlineBits(escapeText(cell)) + "</td>";
+            }).join("") +
+            "</tr>"
+          );
+        }).join("") +
+        "</tbody>";
+      return '<div class="teach-table-wrap"><table class="teach-table">' + thead + tbody + "</table></div>";
+    }
+
+    function formatTextChunk(chunk) {
+      var lines = String(chunk || "").split("\\n");
+      var pieces = [];
+      var i = 0;
+      while (i < lines.length) {
+        if (
+          isTableRow(lines[i]) &&
+          i + 1 < lines.length &&
+          isTableSeparator(lines[i + 1])
+        ) {
+          var tableLines = [];
+          while (i < lines.length && isTableRow(lines[i])) {
+            tableLines.push(lines[i]);
+            i += 1;
+          }
+          pieces.push(renderMarkdownTable(tableLines));
+          continue;
+        }
+        var buf = [];
+        while (i < lines.length) {
+          if (
+            isTableRow(lines[i]) &&
+            i + 1 < lines.length &&
+            isTableSeparator(lines[i + 1])
+          ) {
+            break;
+          }
+          buf.push(lines[i]);
+          i += 1;
+        }
+        if (buf.length) {
+          pieces.push('<div class="teach-block">' + formatInline(buf.join("\\n")) + "</div>");
+        }
+      }
+      return pieces.join("");
+    }
+
+    var out = [];
+    for (var i = 0; i < parts.length; i += 1) {
+      var part = parts[i];
+      if (part.type === "code") {
+        var priorText = i > 0 && parts[i - 1].type === "text" ? parts[i - 1].value : "";
+        var hinted = lineHintFromText(priorText);
+        var startLine = inferSnippetStartLine(
+          part.value,
+          finding,
+          part.startLine || hinted || 0
+        );
+        out.push(
+          buildEditorHtml({
+            code: part.value,
+            file: finding && finding.file ? finding.file : "snippet",
+            language: part.lang || "ts",
+            startLine: startLine,
+            compact: true,
+          })
+        );
+      } else {
+        out.push(formatTextChunk(part.value));
+      }
+    }
+    return out.join("");
   }
 
   function go(delta) {
@@ -416,6 +851,12 @@ function clientScript(): string {
     }
   }
 
+  async function copyTeachLesson() {
+    var f = current();
+    if (!f) return;
+    await copyText("Lesson", buildSimpleTeach(f));
+  }
+
   async function copyComment() {
     var f = current();
     if (!f) return;
@@ -454,8 +895,26 @@ function clientScript(): string {
       ? els.comment.value.trim()
       : (f.reviewComment || "");
     var line = lineLabel(f);
+    var rechecks = Array.isArray(f.rechecks) ? f.rechecks : [];
+    var history = rechecks.length
+      ? rechecks.map(function (entry, idx) {
+          return [
+            "### Recheck " + (idx + 1) + " — " + (entry.action || "") + " · " + (entry.provider || "") + " · " + (entry.createdAt || ""),
+            "You asked:",
+            entry.userAsked || "",
+            "",
+            "AI understood:",
+            entry.understood || "",
+            "",
+            "Finding:",
+            entry.conclusion || "",
+            entry.details ? "\\nDetails:\\n" + entry.details : "",
+            entry.suggestedComment ? "\\nSuggested paste comment:\\n" + entry.suggestedComment : "",
+          ].filter(Boolean).join("\\n");
+        }).join("\\n\\n")
+      : "(none yet)";
     return [
-      "Please verify this PR review finding. Is it a real issue, should it be softened, or is it a false alarm?",
+      "Please help with this PR review finding. Use the full recheck thread below as context.",
       "",
       "PR #" + PR,
       "Finding id: " + f.id,
@@ -484,13 +943,17 @@ function clientScript(): string {
       f.betterCode || "",
       "\`\`\`",
       "",
-      "## Paste comment",
+      "## Current paste comment (may be edited by reviewer)",
       comment,
       "",
-      "## My notes",
+      "## Draft notes (not submitted yet)",
       notes || "(none)",
       "",
-      "Reply with: stand | update (what to change) | false alarm (why). Keep any revised reviewComment to 1–3 short sentences.",
+      "## Recheck history (newest first — full thread)",
+      history,
+      "",
+      "Reply with: stand | update (what to change) | false alarm (why).",
+      "If asked for a GitHub paste comment, give 1–3 short polite sentences (Could we…?).",
     ].join("\\n");
   }
 
@@ -506,51 +969,466 @@ function clientScript(): string {
     }
   }
 
+  function syncProviderSelects(fromTeach) {
+    if (!(els.provider instanceof HTMLSelectElement)) return;
+    if (!(els.providerTeach instanceof HTMLSelectElement)) return;
+    if (fromTeach) {
+      if (els.providerTeach.value) els.provider.value = els.providerTeach.value;
+    } else if (els.provider.value) {
+      els.providerTeach.value = els.provider.value;
+    }
+  }
+
+  function fillProviderSelect(select, list, preferredValue) {
+    if (!(select instanceof HTMLSelectElement)) return;
+    select.innerHTML = "";
+    if (!list.length) {
+      var empty = document.createElement("option");
+      empty.value = "";
+      empty.textContent = "No providers";
+      select.appendChild(empty);
+      return;
+    }
+    list.forEach(function (id) {
+      var o = document.createElement("option");
+      o.value = id;
+      o.textContent = id;
+      select.appendChild(o);
+    });
+    if (preferredValue && list.indexOf(preferredValue) !== -1) {
+      select.value = preferredValue;
+      return;
+    }
+    var preferred = ["cursor", "claude-code", "command-code", "anthropic"];
+    for (var i = 0; i < preferred.length; i++) {
+      if (list.indexOf(preferred[i]) !== -1) {
+        select.value = preferred[i];
+        break;
+      }
+    }
+  }
+
   async function loadProviders() {
     if (!SERVED || !(els.provider instanceof HTMLSelectElement)) {
       if (els.serveHint) {
         els.serveHint.hidden = false;
         els.serveHint.textContent =
-          "Recheck needs the local server. From the repo root run: pnpm prsm --serve " + PR;
+          "Recheck needs the local server. From the repo root run: pnpm prsm --serve-ui then open /pr/" + PR + "/";
       }
       if (els.recheckBtn) els.recheckBtn.disabled = true;
+      if (els.teachBtn) els.teachBtn.disabled = true;
+      if (els.verifyBtn) els.verifyBtn.disabled = true;
       return;
     }
     try {
-      var res = await fetch("/api/providers");
+      var res = await fetch(apiUrl("/providers"));
       var body = await res.json();
       var list = Array.isArray(body.providers) ? body.providers : [];
-      els.provider.innerHTML = "";
+      var cliOnly = list.filter(function (id) {
+        return id === "cursor" || id === "claude-code" || id === "command-code";
+      });
+      var previous = els.provider.value;
+      fillProviderSelect(els.provider, list, previous);
+      fillProviderSelect(els.providerTeach, list, previous || els.provider.value);
+      syncProviderSelects(false);
+
       if (!list.length) {
-        var opt = document.createElement("option");
-        opt.value = "";
-        opt.textContent = "No providers available";
-        els.provider.appendChild(opt);
         if (els.recheckBtn) els.recheckBtn.disabled = true;
+        if (els.teachBtn) els.teachBtn.disabled = true;
+        if (els.verifyBtn) els.verifyBtn.disabled = true;
         return;
       }
-      list.forEach(function (id) {
-        var o = document.createElement("option");
-        o.value = id;
-        o.textContent = id;
-        els.provider.appendChild(o);
-      });
-      var preferred = ["cursor", "claude-code", "command-code", "anthropic"];
-      for (var i = 0; i < preferred.length; i++) {
-        if (list.indexOf(preferred[i]) !== -1) {
-          els.provider.value = preferred[i];
-          break;
-        }
+
+      var agentBox = document.getElementById("verify-agents");
+      if (agentBox) {
+        agentBox.innerHTML = "";
+        var source = cliOnly.length ? cliOnly : list;
+        source.forEach(function (id, idx) {
+          var label = document.createElement("label");
+          var box = document.createElement("input");
+          box.type = "checkbox";
+          box.name = "verify-agent";
+          box.value = id;
+          box.checked = idx === 0;
+          label.appendChild(box);
+          label.appendChild(document.createTextNode(" " + id));
+          agentBox.appendChild(label);
+        });
       }
+
       if (els.serveHint) els.serveHint.hidden = true;
-      if (els.recheckBtn) els.recheckBtn.disabled = false;
+      if (els.recheckBtn) els.recheckBtn.disabled = rechecking;
+      if (els.teachBtn) els.teachBtn.disabled = rechecking;
+      if (els.verifyBtn) els.verifyBtn.disabled = verifying;
+      if (els.notes) els.notes.disabled = rechecking;
+      if (els.provider) els.provider.disabled = rechecking;
+      if (els.providerTeach) els.providerTeach.disabled = rechecking;
     } catch (e) {
       if (els.serveHint) {
         els.serveHint.hidden = false;
         els.serveHint.textContent = "Could not reach /api/providers. Is --serve running?";
       }
       if (els.recheckBtn) els.recheckBtn.disabled = true;
+      if (els.teachBtn) els.teachBtn.disabled = true;
+      if (els.verifyBtn) els.verifyBtn.disabled = true;
     }
+  }
+
+  function selectedVerifyAgents() {
+    return Array.from(document.querySelectorAll('input[name="verify-agent"]:checked'))
+      .map(function (el) { return el instanceof HTMLInputElement ? el.value : ""; })
+      .filter(Boolean);
+  }
+
+  function setVerifyUiRunning(running) {
+    verifying = Boolean(running);
+    if (els.verifyBtn) {
+      els.verifyBtn.disabled = running || !SERVED;
+      els.verifyBtn.textContent = running ? "Verifying…" : "Verify author updates";
+    }
+    if (els.verifyPanel) els.verifyPanel.hidden = false;
+  }
+
+  function renderVerifyJob(job) {
+    if (!job) return;
+    if (els.verifyPanel) els.verifyPanel.hidden = false;
+    var progress = job.progress;
+    var headline =
+      job.status === "running"
+        ? "VERIFYING"
+        : job.status === "done"
+          ? "VERIFY DONE"
+          : "VERIFY FAILED";
+    if (els.verifyStatus) {
+      els.verifyStatus.hidden = false;
+      els.verifyStatus.className = "verify-status " + job.status;
+      if (job.status === "done" && job.counts) {
+        var c = job.counts;
+        els.verifyStatus.innerHTML =
+          headline +
+          " · resolved " +
+          (c.resolved || 0) +
+          " · accepted " +
+          (c.accepted || 0) +
+          " · needs look " +
+          (c.needs_look || 0) +
+          " · still open " +
+          (c.still_open || 0) +
+          ' · <a href="verify-report.html">Open report</a>';
+      } else if (job.status === "error") {
+        els.verifyStatus.textContent = headline + " · " + (job.error || "unknown error");
+      } else {
+        els.verifyStatus.textContent =
+          headline +
+          (progress && progress.label ? " · " + progress.label : "");
+      }
+    }
+    if (els.verifyLive) {
+      els.verifyLive.hidden = false;
+      var ageMs = Date.now() - Date.parse(job.updatedAt || job.createdAt || "");
+      var age =
+        !Number.isFinite(ageMs) || ageMs < 0
+          ? ""
+          : ageMs < 2000
+            ? "just now"
+            : ageMs < 60000
+              ? Math.floor(ageMs / 1000) + "s ago"
+              : Math.floor(ageMs / 60000) + "m ago";
+      var pct =
+        progress && progress.total
+          ? " · " + progress.current + "/" + progress.total
+          : "";
+      els.verifyLive.textContent =
+        job.status === "running"
+          ? "Live" + pct + " · last update " + age + " (agent may sit quiet while the model thinks)"
+          : "Finished · last update " + age;
+    }
+    if (els.verifyLogs) {
+      var logs = Array.isArray(job.logs) ? job.logs : [];
+      els.verifyLogs.textContent = logs.join("\\n");
+      if (logs.length !== lastVerifyLogCount) {
+        els.verifyLogs.scrollTop = els.verifyLogs.scrollHeight;
+        lastVerifyLogCount = logs.length;
+      }
+    }
+  }
+
+  function stopVerifyPoll() {
+    if (verifyPollTimer) {
+      window.clearInterval(verifyPollTimer);
+      verifyPollTimer = 0;
+    }
+  }
+
+  function startVerifyPoll(id) {
+    verifyJobId = id;
+    stopVerifyPoll();
+    verifyPollTimer = window.setInterval(pollVerifyJob, 1000);
+    pollVerifyJob();
+  }
+
+  async function pollVerifyJob() {
+    if (!verifyJobId) return;
+    try {
+      var res = await fetch(apiUrl("/verify/" + verifyJobId));
+      var job = await res.json();
+      if (!res.ok) throw new Error(job.error || ("HTTP " + res.status));
+      renderVerifyJob(job);
+      if (job.status === "done" || job.status === "error") {
+        stopVerifyPoll();
+        setVerifyUiRunning(false);
+        if (job.status === "done") {
+          if (job.payload && Array.isArray(job.payload.findings)) {
+            all = job.payload.findings.map(findingFromApi);
+          }
+          var c = job.counts || {};
+          showFlash(
+            "Verify done · resolved " +
+              (c.resolved || 0) +
+              " · still open " +
+              (c.still_open || 0),
+          );
+          clampIndex();
+          paint();
+        } else {
+          showFlash(job.error || "Verify failed");
+        }
+      } else {
+        setVerifyUiRunning(true);
+      }
+    } catch (e) {
+      if (els.verifyLive) {
+        els.verifyLive.hidden = false;
+        els.verifyLive.textContent =
+          "Poll error — retrying… " + (e && e.message ? e.message : "");
+      }
+    }
+  }
+
+  async function attachActiveVerify() {
+    if (!SERVED) return;
+    try {
+      var res = await fetch(apiUrl("/verify/active"));
+      var body = await res.json();
+      if (body && body.job && body.job.id && body.job.prNumber === PR) {
+        renderVerifyJob(body.job);
+        if (body.job.status === "running") {
+          setVerifyUiRunning(true);
+          startVerifyPoll(body.job.id);
+        }
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  async function verifyAuthorUpdates() {
+    if (!SERVED || verifying || rechecking) return;
+    var agents = selectedVerifyAgents();
+    if (!agents.length) {
+      showFlash("Pick at least one agent for verify");
+      return;
+    }
+    setVerifyUiRunning(true);
+    lastVerifyLogCount = 0;
+    if (els.verifyStatus) {
+      els.verifyStatus.hidden = false;
+      els.verifyStatus.className = "verify-status running";
+      els.verifyStatus.textContent = "Starting verify with " + agents.join(", ") + "…";
+    }
+    if (els.verifyLive) {
+      els.verifyLive.hidden = false;
+      els.verifyLive.textContent = "Starting…";
+    }
+    if (els.verifyLogs) els.verifyLogs.textContent = "";
+    try {
+      var res = await fetch(apiUrl("/verify"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ providers: agents }),
+      });
+      var body = await res.json();
+      if (res.status === 409 && body.jobId) {
+        showFlash("Already verifying — showing live progress");
+        startVerifyPoll(body.jobId);
+        if (body.job) renderVerifyJob(body.job);
+        return;
+      }
+      if (!res.ok) throw new Error(body.error || ("HTTP " + res.status));
+      var jobId = body.jobId || (body.job && body.job.id);
+      if (!jobId) throw new Error("Verify job did not return an id");
+      if (body.job) renderVerifyJob(body.job);
+      startVerifyPoll(jobId);
+    } catch (e) {
+      setVerifyUiRunning(false);
+      showFlash(e && e.message ? e.message : "Verify failed");
+      if (els.verifyStatus) {
+        els.verifyStatus.hidden = false;
+        els.verifyStatus.className = "verify-status error";
+        els.verifyStatus.textContent =
+          e && e.message ? e.message : "Verify failed";
+      }
+    }
+  }
+
+  let recheckPollTimer = 0;
+  let recheckJobId = "";
+  let lastRecheckLogCount = 0;
+
+  function clearRecheckLivePanel() {
+    if (els.recheckPanel) els.recheckPanel.hidden = true;
+    if (els.recheckStatus) {
+      els.recheckStatus.hidden = true;
+      els.recheckStatus.textContent = "";
+      els.recheckStatus.className = "recheck-status";
+    }
+    if (els.recheckLive) {
+      els.recheckLive.hidden = true;
+      els.recheckLive.textContent = "";
+    }
+    if (els.recheckLogs) els.recheckLogs.textContent = "";
+    lastRecheckLogCount = 0;
+  }
+
+  function setRecheckUiRunning(running) {
+    rechecking = Boolean(running);
+    if (els.recheckBtn) {
+      els.recheckBtn.disabled = running || !SERVED;
+      els.recheckBtn.textContent = running ? "Rechecking…" : "Recheck";
+    }
+    if (els.teachBtn) {
+      els.teachBtn.disabled = running || !SERVED;
+      els.teachBtn.textContent = running ? "Teaching…" : "Teach me";
+    }
+    if (els.notes) els.notes.disabled = running;
+    if (els.provider) els.provider.disabled = running || !SERVED;
+    if (els.providerTeach) els.providerTeach.disabled = running || !SERVED;
+    if (running && els.recheckPanel) els.recheckPanel.hidden = false;
+  }
+
+  function renderRecheckJob(job) {
+    if (els.recheckPanel) els.recheckPanel.hidden = false;
+    if (els.recheckStatus) {
+      els.recheckStatus.hidden = false;
+      els.recheckStatus.className =
+        "recheck-status " +
+        (job.status === "running"
+          ? "running"
+          : job.status === "done"
+            ? "done"
+            : "error");
+      els.recheckStatus.textContent =
+        (job.status === "running" ? "RUNNING · " : job.status === "done" ? "DONE · " : "FAILED · ") +
+        (job.label || job.note || "");
+    }
+    if (els.recheckLive) {
+      els.recheckLive.hidden = false;
+      var ageMs = Date.now() - Date.parse(job.updatedAt || job.createdAt || "");
+      var age =
+        !Number.isFinite(ageMs) || ageMs < 0
+          ? ""
+          : ageMs < 2000
+            ? "just now"
+            : ageMs < 60000
+              ? Math.floor(ageMs / 1000) + "s ago"
+              : Math.floor(ageMs / 60000) + "m ago";
+      els.recheckLive.textContent =
+        job.status === "running"
+          ? "Live progress for this run only · last update " + age
+          : "Finishing… · last update " + age;
+    }
+    if (els.recheckLogs) {
+      var logs = Array.isArray(job.logs) ? job.logs : [];
+      els.recheckLogs.textContent = logs.join("\\n");
+      if (logs.length !== lastRecheckLogCount) {
+        els.recheckLogs.scrollTop = els.recheckLogs.scrollHeight;
+        lastRecheckLogCount = logs.length;
+      }
+    }
+  }
+
+  function stopRecheckPoll() {
+    if (recheckPollTimer) {
+      window.clearInterval(recheckPollTimer);
+      recheckPollTimer = 0;
+    }
+  }
+
+  function finishRecheckJob(job) {
+    stopRecheckPoll();
+    setRecheckUiRunning(false);
+    clearRecheckLivePanel();
+    if (job.payload && Array.isArray(job.payload.findings)) {
+      all = job.payload.findings.map(findingFromApi);
+    }
+    var action = job.action || "";
+    if (action === "false_alarm") {
+      showFlash("Saved in Recheck history · marked false alarm (paste comment unchanged)");
+      clampIndex();
+    } else if (action === "update") {
+      showFlash("Saved in Recheck history · analysis updated (suggested paste is there)");
+      if (job.finding && job.finding.id) focusById(job.finding.id);
+    } else {
+      showFlash("Saved in Recheck history · stood (see newest card below)");
+      if (job.finding && job.finding.id) focusById(job.finding.id);
+    }
+    paint();
+    var host = document.getElementById("recheck-history");
+    if (host) host.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  async function pollRecheckJob() {
+    if (!recheckJobId) return;
+    try {
+      var res = await fetch(apiUrl("/reverify/" + recheckJobId));
+      var job = await res.json();
+      if (!res.ok) throw new Error(job.error || ("HTTP " + res.status));
+      renderRecheckJob(job);
+      if (job.status === "done" || job.status === "error") {
+        if (job.status === "error") {
+          stopRecheckPoll();
+          setRecheckUiRunning(false);
+          showFlash(job.error || "Recheck failed");
+          // Leave the live panel visible briefly so the failure is readable,
+          // but mark it clearly — editing notes will hide it.
+          if (els.recheckStatus) {
+            els.recheckStatus.hidden = false;
+            els.recheckStatus.className = "recheck-status error";
+            els.recheckStatus.textContent = job.error || "Recheck failed";
+          }
+        } else {
+          finishRecheckJob(job);
+        }
+      } else {
+        setRecheckUiRunning(true);
+      }
+    } catch (e) {
+      if (els.recheckLive) {
+        els.recheckLive.hidden = false;
+        els.recheckLive.textContent =
+          "Poll error — retrying… " + (e && e.message ? e.message : "");
+      }
+    }
+  }
+
+  function startRecheckPoll(id) {
+    recheckJobId = id;
+    stopRecheckPoll();
+    recheckPollTimer = window.setInterval(pollRecheckJob, 1000);
+    pollRecheckJob();
+  }
+
+  async function attachActiveRecheck() {
+    if (!SERVED) return;
+    try {
+      var res = await fetch(apiUrl("/reverify/active"));
+      var body = await res.json();
+      if (body && body.job && body.job.id && body.job.prNumber === PR) {
+        renderRecheckJob(body.job);
+        if (body.job.status === "running") {
+          setRecheckUiRunning(true);
+          startRecheckPoll(body.job.id);
+        }
+      }
+    } catch (e) { /* ignore */ }
   }
 
   async function recheck() {
@@ -564,19 +1442,23 @@ function clientScript(): string {
     state.notes[f.storageId] = notes;
     saveState(state);
 
-    rechecking = true;
-    if (els.recheckBtn) {
-      els.recheckBtn.disabled = true;
-      els.recheckBtn.textContent = "Rechecking…";
-    }
+    setRecheckUiRunning(true);
+    lastRecheckLogCount = 0;
+    if (els.recheckPanel) els.recheckPanel.hidden = false;
     if (els.recheckStatus) {
       els.recheckStatus.hidden = false;
+      els.recheckStatus.className = "recheck-status running";
       els.recheckStatus.textContent =
-        "Running " + els.provider.value + " on this finding only… (can take a few minutes)";
+        "Starting " + els.provider.value + "…";
+    }
+    if (els.recheckLogs) els.recheckLogs.textContent = "";
+    if (els.recheckLive) {
+      els.recheckLive.hidden = false;
+      els.recheckLive.textContent = "Starting…";
     }
 
     try {
-      var res = await fetch("/api/reverify", {
+      var res = await fetch(apiUrl("/reverify"), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -586,65 +1468,21 @@ function clientScript(): string {
         }),
       });
       var body = await res.json();
+      if (res.status === 409 && body.jobId) {
+        showFlash("Already rechecking — showing live progress");
+        startRecheckPoll(body.jobId);
+        if (body.job) renderRecheckJob(body.job);
+        return;
+      }
       if (!res.ok) throw new Error(body.error || ("HTTP " + res.status));
-
-      if (body.payload && Array.isArray(body.payload.findings)) {
-        all = body.payload.findings.map(findingFromApi);
-      }
-
-      if (body.action === "false_alarm" || body.action === "drop") {
-        var faId = body.finding && body.finding.id ? body.finding.id : f.id;
-        if (body.finding && body.finding.reviewComment) {
-          state.comments[encodeURIComponent(faId)] = body.finding.reviewComment;
-          saveState(state);
-        }
-        showFlash("False alarm — kept in review (not deleted)");
-        if (els.recheckStatus) {
-          els.recheckStatus.hidden = false;
-          els.recheckStatus.textContent =
-            (body.note || "Marked false alarm.") + " Toggle “Include false alarms” to revisit.";
-        }
-        clampIndex();
-      } else if (body.action === "update") {
-        var updatedId = body.finding && body.finding.id ? body.finding.id : f.id;
-        if (body.finding && body.finding.reviewComment) {
-          var updatedStorage = encodeURIComponent(updatedId);
-          state.comments[updatedStorage] = body.finding.reviewComment;
-          if (updatedStorage !== f.storageId) {
-            state.notes[updatedStorage] = state.notes[f.storageId] || "";
-            delete state.comments[f.storageId];
-            delete state.notes[f.storageId];
-          }
-          saveState(state);
-        }
-        focusById(updatedId);
-        showFlash("Updated — " + (body.note || "saved"));
-        if (els.recheckStatus) {
-          els.recheckStatus.hidden = false;
-          els.recheckStatus.textContent = body.note || "Finding updated on disk.";
-        }
-      } else {
-        focusById(body.finding && body.finding.id ? body.finding.id : f.id);
-        showFlash("Stood — " + (body.note || "no change"));
-        if (els.recheckStatus) {
-          els.recheckStatus.hidden = false;
-          els.recheckStatus.textContent = body.note || "No material change.";
-        }
-      }
-      paint();
+      var jobId = body.jobId || (body.job && body.job.id);
+      if (!jobId) throw new Error("Recheck job did not return an id");
+      if (body.job) renderRecheckJob(body.job);
+      startRecheckPoll(jobId);
     } catch (e) {
+      setRecheckUiRunning(false);
+      clearRecheckLivePanel();
       showFlash(e && e.message ? e.message : "Recheck failed");
-      if (els.recheckStatus) {
-        els.recheckStatus.hidden = false;
-        els.recheckStatus.textContent = e && e.message ? e.message : "Recheck failed";
-      }
-    } finally {
-      rechecking = false;
-      if (els.recheckBtn) {
-        els.recheckBtn.disabled = !SERVED;
-        els.recheckBtn.textContent = "Recheck";
-      }
-      paint();
     }
   }
 
@@ -655,7 +1493,7 @@ function clientScript(): string {
     state.notes[f.storageId] = notes;
     saveState(state);
     try {
-      var res = await fetch("/api/disposition", {
+      var res = await fetch(apiUrl("/disposition"), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -687,6 +1525,13 @@ function clientScript(): string {
   document.getElementById("btn-resolve").addEventListener("click", function () { toggleResolve(true); });
   document.getElementById("btn-restore").addEventListener("click", function () { toggleResolve(false); });
   document.getElementById("btn-save-comment").addEventListener("click", saveComment);
+  if (els.copyTeachBtn) {
+    els.copyTeachBtn.addEventListener("click", copyTeachLesson);
+  }
+  var copyTeachBottom = document.getElementById("btn-copy-teach-bottom");
+  if (copyTeachBottom) {
+    copyTeachBottom.addEventListener("click", copyTeachLesson);
+  }
   document.getElementById("btn-copy-comment").addEventListener("click", copyComment);
   document.getElementById("btn-copy-current-code").addEventListener("click", copyCurrentCode);
   document.getElementById("btn-copy-better-code").addEventListener("click", copyBetterCode);
@@ -696,6 +1541,39 @@ function clientScript(): string {
   document.getElementById("btn-copy-agent").addEventListener("click", copyForAgent);
   document.getElementById("btn-copy-agent-top").addEventListener("click", copyForAgent);
   document.getElementById("btn-recheck").addEventListener("click", recheck);
+  if (els.teachBtn) {
+    els.teachBtn.addEventListener("click", function () {
+      syncProviderSelects(true);
+      if (!(els.notes instanceof HTMLTextAreaElement)) return;
+      els.notes.value =
+        "Teach me this finding the way a patient teammate would — deep, not a summary.\\n\\n" +
+        "I need a full classroom walkthrough:\\n" +
+        "1) Punchline first (what is already correct vs what is wrong).\\n" +
+        "2) Exact file/function/line numbers.\\n" +
+        "3) Tiny real code snippets in fenced blocks tagged with PR line numbers (example: triple-backtick ts:108).\\n" +
+        "4) Under EACH important line: Input (sample values) → What happens → Output/next state.\\n" +
+        "5) Side-by-side with any already-correct function if one exists.\\n" +
+        "6) Request A / Request B timeline if concurrency matters.\\n" +
+        "7) What the reviewer wants, step by step.\\n" +
+        "8) Short human GitHub comment.\\n\\n" +
+        "Put the full lesson in teachMe. Depth beats brevity. Do NOT use a READ/WRITE/CALL/WAIT checklist.";
+      recheck();
+    });
+  }
+  if (els.provider instanceof HTMLSelectElement) {
+    els.provider.addEventListener("change", function () { syncProviderSelects(false); });
+  }
+  if (els.providerTeach instanceof HTMLSelectElement) {
+    els.providerTeach.addEventListener("change", function () { syncProviderSelects(true); });
+  }
+  if (els.notes instanceof HTMLTextAreaElement) {
+    els.notes.addEventListener("input", function () {
+      if (!rechecking) clearRecheckLivePanel();
+    });
+  }
+  if (els.verifyBtn) {
+    els.verifyBtn.addEventListener("click", verifyAuthorUpdates);
+  }
   document.getElementById("btn-false-alarm").addEventListener("click", function () {
     setDisposition("false_alarm");
   });
@@ -731,6 +1609,8 @@ function clientScript(): string {
   });
 
   loadProviders();
+  attachActiveVerify();
+  attachActiveRecheck();
   paint();
 })();
 </script>`;
@@ -740,9 +1620,15 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
   const ordered = sortFindingsForTriage(
     run.findings.filter((f) => f.kind !== "praise"),
   );
+  const link = {
+    ...(run.prUrl !== undefined ? { prUrl: run.prUrl } : {}),
+    ...(run.head !== undefined ? { head: run.head } : {}),
+  };
   const payload = {
     prNumber: run.prNumber,
-    findings: ordered.map(toTriageFinding),
+    ...(run.prUrl !== undefined ? { prUrl: run.prUrl } : {}),
+    ...(run.head !== undefined ? { head: run.head } : {}),
+    findings: ordered.map((finding) => toTriageFinding(finding, link)),
   };
 
   return `<!doctype html>
@@ -807,7 +1693,7 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
     }
     #progress-text { font-weight: 600; color: #fff; }
     .hint { color: var(--muted); font-size: 0.88rem; }
-    #flash, #recheck-status, #serve-hint {
+    #flash, #serve-hint {
       margin: 0.5rem 0 0;
       color: #9cdcfe;
       font-size: 0.9rem;
@@ -846,10 +1732,152 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
     #panel[hidden],
     #flash[hidden],
     #serve-hint[hidden],
-    #recheck-status[hidden] {
+    #recheck-status[hidden],
+    #recheck-live-panel[hidden],
+    #recheck-live[hidden] {
       display: none !important;
     }
     .meta { color: var(--muted); margin: 0.25rem 0 0; font-size: 0.92rem; }
+    .meta a.file-link { color: var(--accent); text-decoration: none; }
+    .meta a.file-link:hover { color: var(--accent-hover); text-decoration: underline; }
+    .meta a.file-link code { color: inherit; }
+    .teach-section {
+      background: #1b2838;
+      border: 1px solid #2d4a66;
+      border-radius: 8px;
+      padding: 0.85rem 1rem 1rem;
+    }
+    .teach-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      background: #1b2838;
+      margin: -0.35rem -0.15rem 0.35rem;
+      padding: 0.35rem 0.15rem 0.45rem;
+    }
+    .teach-head h3 { margin: 0; }
+    .teach-head .hint { margin: 0; }
+    .recheck-teach .teach-head {
+      background: #1e2a24;
+      margin: -0.15rem 0 0.45rem;
+      padding: 0.15rem 0 0.35rem;
+      position: sticky;
+      top: 0;
+    }
+    .teach-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .teach-provider-label {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.88rem;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+    #provider-teach {
+      min-width: 9rem;
+      background: var(--bg);
+      color: var(--ink);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 0.35rem 0.5rem;
+    }
+    .teach-simple,
+    .teach-prose {
+      margin-top: 0.35rem;
+      white-space: pre-wrap;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+      font-size: 0.92rem;
+      line-height: 1.55;
+      color: var(--ink);
+    }
+    .teach-prose {
+      margin: 0.35rem 0 0;
+      padding: 0;
+      background: transparent;
+      border: 0;
+      overflow-x: auto;
+    }
+    .teach-block { white-space: pre-wrap; }
+    .teach-h {
+      margin: 0.85rem 0 0.35rem;
+      font-size: 1rem;
+      font-weight: 650;
+      color: #d7e7dd;
+    }
+    .teach-label {
+      font-weight: 650;
+      color: #9ad0b0;
+    }
+    .teach-code {
+      margin: 0.45rem 0;
+      padding: 0.55rem 0.7rem;
+      background: #141a16;
+      border: 1px solid #2f3d34;
+      border-radius: 6px;
+      overflow-x: auto;
+      white-space: pre;
+      font-family: Consolas, "Cascadia Code", ui-monospace, monospace;
+      font-size: 0.84rem;
+      line-height: 1.4;
+    }
+    .editor-compact {
+      margin: 0.55rem 0 0.75rem;
+    }
+    .editor-compact .editor-body { max-height: 18rem; }
+    .teach-block .editor { margin-top: 0.35rem; }
+    .teach-hr {
+      border: 0;
+      border-top: 1px solid #3d5a45;
+      margin: 0.75rem 0;
+    }
+    .teach-table-wrap {
+      margin: 0.55rem 0 0.85rem;
+      overflow-x: auto;
+      border: 1px solid #3d5a45;
+      border-radius: 6px;
+      background: #18231d;
+    }
+    .teach-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+      line-height: 1.4;
+    }
+    .teach-table th,
+    .teach-table td {
+      padding: 0.45rem 0.65rem;
+      border-bottom: 1px solid #2f3d34;
+      text-align: left;
+      vertical-align: top;
+    }
+    .teach-table th {
+      background: #24332a;
+      color: #d7e7dd;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+    .teach-table tr:last-child td { border-bottom: 0; }
+    .teach-table td code,
+    .teach-table th code {
+      color: #9cdcfe;
+      font-size: 0.9em;
+    }
+    .teach-table em { color: #b8a0a0; font-style: italic; }
+    .recheck-teach {
+      background: #1e2a24;
+      border: 1px solid #3d5a45;
+      border-radius: 6px;
+      padding: 0.65rem 0.75rem;
+      margin: 0.55rem 0 0.75rem;
+    }
     code {
       font-family: Consolas, "Cascadia Code", ui-monospace, monospace;
       font-size: 0.9em;
@@ -974,6 +2002,11 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
     }
     button:hover { background: var(--accent-hover); }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
+    textarea:disabled,
+    select:disabled {
+      opacity: 0.65;
+      cursor: not-allowed;
+    }
     button.btn-secondary {
       background: #2d2d2d;
       border-color: var(--line);
@@ -1021,6 +2054,29 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       margin-top: 0.45rem;
     }
     .provider-row label { color: var(--muted); font-size: 0.88rem; }
+    #btn-verify { margin: 0; }
+    .verify-agents {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 0.45rem 0.75rem;
+      align-items: center;
+      padding: 0.2rem 0.45rem;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #1e1e1e;
+    }
+    .verify-agents label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      margin: 0;
+      color: var(--ink);
+      font-size: 0.82rem;
+      cursor: pointer;
+      text-transform: none;
+      letter-spacing: 0;
+      font-weight: 500;
+    }
     .badge-fa {
       background: #3d2a12;
       border-color: #a37a2c;
@@ -1028,6 +2084,84 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       margin-left: 0.35rem;
     }
     #panel.is-false-alarm { border-left-color: #dcdcaa; }
+    .verify-panel {
+      background: var(--bg-elevated);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.75rem 0.9rem;
+      margin: 0.75rem 0 1rem;
+    }
+    .verify-status { margin: 0 0 0.35rem; font-weight: 600; }
+    .verify-status.running { color: var(--major); }
+    .verify-status.done { color: #9cdcfe; }
+    .verify-status.error { color: var(--blocker); }
+    .verify-logs,
+    .recheck-logs {
+      margin: 0.45rem 0 0;
+      max-height: 14rem;
+      overflow: auto;
+      background: #1e1e1e;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0.65rem 0.75rem;
+      font: 0.78rem/1.45 Consolas, "Cascadia Code", ui-monospace, monospace;
+      white-space: pre-wrap;
+      color: #cccccc;
+    }
+    .recheck-live-panel {
+      background: var(--bg-elevated);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.75rem 0.9rem;
+      margin: 0.75rem 0 0;
+    }
+    .recheck-status { margin: 0 0 0.35rem; font-weight: 600; color: #9cdcfe; }
+    .recheck-status.running { color: var(--major); }
+    .recheck-status.done { color: #9cdcfe; }
+    .recheck-status.error { color: var(--blocker); }
+    #recheck-history { margin-top: 1rem; display: grid; gap: 0.75rem; }
+    .recheck-entry {
+      background: var(--bg-elevated);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.75rem 0.9rem;
+    }
+    .recheck-entry.is-latest {
+      border-color: var(--accent);
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+    .badge-latest {
+      background: #1e3a5f;
+      border-color: var(--accent);
+      color: #9cdcfe;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+    .recheck-entry header {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+      margin-bottom: 0.55rem;
+    }
+    .recheck-entry p { margin: 0.35rem 0; }
+    .recheck-entry details { margin-top: 0.45rem; }
+    .recheck-details { white-space: pre-wrap; color: var(--muted); font-size: 0.9rem; }
+    .recheck-suggest {
+      margin-top: 0.65rem;
+      padding-top: 0.55rem;
+      border-top: 1px solid var(--line);
+    }
+    .recheck-suggest-body {
+      margin: 0.35rem 0 0.55rem;
+      white-space: pre-wrap;
+      background: #1e1e1e;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0.55rem 0.7rem;
+      font: 0.88rem/1.45 Consolas, "Cascadia Code", ui-monospace, monospace;
+      color: #d4d4d4;
+    }
   </style>
 </head>
 <body>
@@ -1035,7 +2169,11 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
     <h1>PR #${run.prNumber} — Triage</h1>
     <p class="lede">${escapeHtml(run.title ?? "")} · one finding at a time (critical → lower)</p>
     <div class="nav-links">
+      <a href="/">← Home</a>
       <a href="final-review.html">Open list view</a>
+      <a href="verify-report.html" id="verify-report-link">Verify report</a>
+      <div class="verify-agents" id="verify-agents" aria-label="Agents for verify"></div>
+      <button type="button" id="btn-verify" disabled>Verify author updates</button>
       <label class="toggle"><input type="checkbox" id="show-resolved" /> Include resolved</label>
       <label class="toggle"><input type="checkbox" id="show-false-alarms" /> Include false alarms</label>
     </div>
@@ -1045,6 +2183,11 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       <span class="hint">← → navigate · R resolve · false alarms stay on disk</span>
     </section>
     <p id="serve-hint" hidden></p>
+    <section id="verify-panel" class="verify-panel" hidden>
+      <p id="verify-status" class="verify-status"></p>
+      <p id="verify-live" class="hint" hidden></p>
+      <pre id="verify-logs" class="verify-logs" aria-live="polite"></pre>
+    </section>
     <p id="flash" hidden></p>
 
     <div id="empty" hidden>
@@ -1066,6 +2209,22 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       <section>
         <h3>Issue (simple)</h3>
         <p id="issue-simple"></p>
+      </section>
+
+      <section class="teach-section">
+        <div class="teach-head">
+          <h3>Explain simply</h3>
+          <button type="button" id="btn-copy-teach">Copy lesson</button>
+        </div>
+        <p class="hint">A plain walkthrough of this finding. <strong>Teach me</strong> runs one AI agent for a deep teammate-style lesson (line-by-line with sample inputs/outputs) + human PR comment, then saves it in Recheck history. <strong>Copy lesson</strong> copies the markdown (not the editor chrome).</p>
+        <div id="teach-simple" class="teach-simple"></div>
+        <div class="toolbar teach-actions" style="margin-top:0.5rem">
+          <label for="provider-teach" class="teach-provider-label">Agent</label>
+          <select id="provider-teach" aria-label="Teach me agent"></select>
+          <button type="button" id="btn-teach-me" disabled>Teach me</button>
+          <button type="button" class="btn-secondary" id="btn-copy-teach-bottom">Copy lesson</button>
+        </div>
+        <p class="hint" style="margin-top:0.4rem">Same list as Recheck below — pick cursor, claude-code, or command-code. One agent per Teach me (not all at once yet).</p>
       </section>
 
       <section>
@@ -1114,9 +2273,9 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       </section>
 
       <section>
-        <h3>Recheck this finding</h3>
-        <p class="hint">Notes + this finding go to the provider. If it’s not a real issue, it becomes a <strong>false alarm</strong> (kept — not deleted). Tip: write “false alarm” in notes.</p>
-        <textarea id="notes" rows="4" placeholder="e.g. False alarm — intentional mock. Or: stands, cookie Secure must match setCookie."></textarea>
+        <h3>Ask a recheck</h3>
+        <p class="hint">Want a plain lesson? Use <strong>Teach me</strong> above. Or type your own question and hit Recheck. Finished answers land in <strong>Recheck history</strong> (Teach me steps first). Use <strong>Copy</strong> on a suggestion for GitHub.</p>
+        <textarea id="notes" rows="4" placeholder="e.g. Also enforce this check on submit, not only in the UI — should the comment sit on line 23?"></textarea>
         <div class="provider-row">
           <label for="provider">Provider</label>
           <select id="provider" aria-label="Provider">
@@ -1125,7 +2284,15 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
           <button type="button" id="btn-recheck" disabled>Recheck</button>
           <button type="button" class="btn-secondary" id="btn-copy-notes">Copy notes</button>
         </div>
-        <p id="recheck-status" hidden></p>
+        <div id="recheck-live-panel" class="recheck-live-panel" hidden>
+          <p class="hint" style="margin:0 0 0.35rem"><strong>Live run</strong> — disappears when finished; the result card is saved in history.</p>
+          <p id="recheck-status" class="recheck-status" hidden></p>
+          <p id="recheck-live" class="hint" hidden></p>
+          <pre id="recheck-logs" class="recheck-logs" aria-live="polite"></pre>
+        </div>
+        <h3>Recheck history</h3>
+        <p class="hint" style="margin-top:0">Newest first. One card per Recheck you ran.</p>
+        <div id="recheck-history"></div>
       </section>
     </article>
 

@@ -6,10 +6,14 @@ Hunt for:
 
 - hidden coupling
 - stale cache / consistency bugs
-- abuse cases
+- abuse cases / authorization gaps
 - scaling traps
 - future maintenance pain
+- UX traps that ship (destructive actions, misleading controls)
 - "impossible" scenarios that are actually possible
+
+Be skeptical rather than automatically agreeing with other reviewers or the author:
+verify whether claimed behavior follows from the code and related call sites.
 
 Prefer questions when you cannot prove the bug yet.
 Do not invent issues without an evidence anchor.

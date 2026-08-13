@@ -13,13 +13,15 @@ async function loadPrompt(passId: string, cwd: string): Promise<string> {
 }
 
 async function loadRules(passId: string, cwd: string): Promise<string> {
-  const sharedPath = path.resolve(cwd, "rules", "writing.md");
+  const sharedFiles = ["writing.md", "hard-review.md"];
   const rulesPath = path.resolve(cwd, "rules", `${passId}.md`);
   const chunks: string[] = [];
-  try {
-    chunks.push(await readFile(sharedPath, "utf8"));
-  } catch {
-    // optional shared writing rules
+  for (const file of sharedFiles) {
+    try {
+      chunks.push(await readFile(path.resolve(cwd, "rules", file), "utf8"));
+    } catch {
+      // optional shared rules
+    }
   }
   try {
     chunks.push(await readFile(rulesPath, "utf8"));

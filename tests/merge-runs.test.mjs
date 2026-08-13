@@ -97,6 +97,98 @@ test("mergeAgentFindings keeps unrelated findings separate", () => {
   assert.equal(merged.length, 2);
 });
 
+test("mergeAgentFindings is transitive across paraphrases", () => {
+  const code = 'const [query, setQuery] = React.useState(searchParams.get("query") ?? "");';
+  const merged = mergeAgentFindings([
+    {
+      agent: "cursor",
+      findings: [
+        finding({
+          id: "cu",
+          file: "apps/operator/src/components/access/operators-screen.tsx",
+          line: 27,
+          currentCode: code,
+          issueSimple: "Topbar search can update the URL without updating the list filter.",
+          whyWeak: "Local state is not synced when searchParams change again.",
+          howToFix: "Derive query from searchParams or sync with an effect.",
+        }),
+      ],
+    },
+    {
+      agent: "claude-code",
+      findings: [
+        finding({
+          id: "cl",
+          file: "apps/operator/src/components/access/operators-screen.tsx",
+          line: 27,
+          currentCode: code,
+          issueSimple:
+            "Searching from the top bar does not filter this list if you are already on the Operators page.",
+          whyWeak: "The screen never re-reads the query param after mount.",
+          howToFix: "Use searchParams as the source of truth for filtering.",
+        }),
+      ],
+    },
+    {
+      agent: "command-code",
+      findings: [
+        finding({
+          id: "cc",
+          file: "apps/operator/src/components/access/operators-screen.tsx",
+          line: 27,
+          currentCode: code,
+          issueSimple:
+            "Top-bar searches can change the URL without changing the operators list filter.",
+          whyWeak: "URL updates and list filtering are out of sync.",
+          howToFix: "Filter from the URL query on every render.",
+        }),
+      ],
+    },
+  ]);
+
+  assert.equal(merged.length, 1);
+  const agents = new Set(merged[0].views.map((view) => view.model));
+  assert.ok(agents.has("cursor"));
+  assert.ok(agents.has("claude-code"));
+  assert.ok(agents.has("command-code"));
+});
+
+test("mergeAgentFindings merges issue with question on same snippet", () => {
+  const code = "<Button variant=\"outline\">New role</Button>";
+  const merged = mergeAgentFindings([
+    {
+      agent: "cursor",
+      findings: [
+        finding({
+          id: "cu",
+          kind: "issue",
+          line: 91,
+          currentCode: code,
+          issueSimple: "The New role button is rendered but does nothing.",
+          category: "dead-code",
+        }),
+      ],
+    },
+    {
+      agent: "claude-code",
+      findings: [
+        finding({
+          id: "cl",
+          kind: "question",
+          severity: "question",
+          line: 91,
+          currentCode: code,
+          issueSimple:
+            "The New role button does not do anything yet and nothing says it is a placeholder.",
+          category: "unclear-intent",
+        }),
+      ],
+    },
+  ]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].kind, "issue");
+});
+
 test("merge prefers documented-debt over major for same courier log", () => {
   const merged = mergeAgentFindings([
     {

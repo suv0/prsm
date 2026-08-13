@@ -65,10 +65,22 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   return inter / (a.size + b.size - inter);
 }
 
+function compatibleKinds(a: Finding, b: Finding): boolean {
+  if (a.kind === b.kind) return true;
+  // Agents often phrase the same defect as issue vs question.
+  const kinds = new Set([a.kind, b.kind]);
+  return kinds.has("issue") && kinds.has("question");
+}
+
 function sameNeighborhood(a: Finding, b: Finding): boolean {
   if (normalizePath(a.file) !== normalizePath(b.file)) return false;
-  if (a.kind !== b.kind) return false;
-  return Math.abs(a.line - b.line) <= 5;
+  if (!compatibleKinds(a, b)) return false;
+  const aEnd = a.endLine ?? a.line;
+  const bEnd = b.endLine ?? b.line;
+  const overlap =
+    Math.max(a.line, b.line) <= Math.min(aEnd, bEnd) ||
+    Math.abs(a.line - b.line) <= 8;
+  return overlap;
 }
 
 function signalOverlap(a: Finding, b: Finding): number {
@@ -98,20 +110,25 @@ export function findingsLikelySame(a: Finding, b: Finding): boolean {
   if (!sameNeighborhood(a, b)) return false;
 
   const issueOverlap = jaccard(tokens(a.issueSimple), tokens(b.issueSimple));
-  if (issueOverlap >= 0.34) return true;
+  const whyOverlap = jaccard(tokens(a.whyWeak), tokens(b.whyWeak));
+  const codeOverlap = jaccard(tokens(a.currentCode), tokens(b.currentCode));
+
+  // Same (or nearly same) code snippet on the same lines → one card.
+  if (codeOverlap >= 0.85) return true;
+  if (codeOverlap >= 0.7 && issueOverlap >= 0.12) return true;
+
+  if (issueOverlap >= 0.28) return true;
 
   const categorySame =
     a.category.trim().toLowerCase() === b.category.trim().toLowerCase() ||
     a.category === "documented-debt" ||
     b.category === "documented-debt";
-  const whyOverlap = jaccard(tokens(a.whyWeak), tokens(b.whyWeak));
-  if (categorySame && whyOverlap >= 0.28) return true;
+  if (categorySame && whyOverlap >= 0.24) return true;
 
-  const codeOverlap = jaccard(tokens(a.currentCode), tokens(b.currentCode));
-  if (codeOverlap >= 0.45 && issueOverlap >= 0.18) return true;
+  if (codeOverlap >= 0.45 && issueOverlap >= 0.16) return true;
 
   // Same file/lines + shared domain signals (otp+courier+log, etc.)
-  if (signalOverlap(a, b) >= 2 && (issueOverlap >= 0.15 || codeOverlap >= 0.35)) {
+  if (signalOverlap(a, b) >= 2 && (issueOverlap >= 0.12 || codeOverlap >= 0.3)) {
     return true;
   }
 
@@ -214,6 +231,9 @@ function mergePair(winner: Finding, loser: Finding, loserAgent: string): Finding
 /**
  * Merge findings from multiple agents: one card per issue, with agent views
  * when wording/severity differs.
+ *
+ * Uses union-find so merges are transitive (A≈C and B≈C ⇒ A+B+C one card),
+ * which greedy cluster-first placement misses.
  */
 export function mergeAgentFindings(
   batches: Array<{ agent: string; findings: Finding[] }>,
@@ -227,24 +247,50 @@ export function mergeAgentFindings(
     }
   }
 
-  const clusters: Item[][] = [];
-  for (const item of items) {
-    let placed = false;
-    for (const cluster of clusters) {
-      if (cluster.some((member) => findingsLikelySame(member.finding, item.finding))) {
-        cluster.push(item);
-        placed = true;
-        break;
+  const parent = items.map((_, index) => index);
+  const find = (index: number): number => {
+    let root = index;
+    while (parent[root] !== root) root = parent[root]!;
+    let cursor = index;
+    while (parent[cursor] !== root) {
+      const next = parent[cursor]!;
+      parent[cursor] = root;
+      cursor = next;
+    }
+    return root;
+  };
+  const union = (a: number, b: number): void => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[rb] = ra;
+  };
+
+  for (let i = 0; i < items.length; i++) {
+    for (let j = i + 1; j < items.length; j++) {
+      if (findingsLikelySame(items[i]!.finding, items[j]!.finding)) {
+        union(i, j);
       }
     }
-    if (!placed) clusters.push([item]);
+  }
+
+  const clusters = new Map<number, Item[]>();
+  for (let i = 0; i < items.length; i++) {
+    const root = find(i);
+    const list = clusters.get(root) ?? [];
+    list.push(items[i]!);
+    clusters.set(root, list);
   }
 
   const merged: Finding[] = [];
-  for (const cluster of clusters) {
-    const ranked = [...cluster].sort(
-      (a, b) => score(b.finding) - score(a.finding),
-    );
+  for (const cluster of clusters.values()) {
+    const ranked = [...cluster].sort((a, b) => {
+      const scoreDiff = score(b.finding) - score(a.finding);
+      if (Math.abs(scoreDiff) > 1.5) return scoreDiff;
+      if (a.finding.kind === "issue" && b.finding.kind !== "issue") return -1;
+      if (b.finding.kind === "issue" && a.finding.kind !== "issue") return 1;
+      return scoreDiff;
+    });
+
     let winner = ranked[0]!.finding;
     const winnerAgent = ranked[0]!.agent;
     for (const other of ranked.slice(1)) {
@@ -253,16 +299,43 @@ export function mergeAgentFindings(
       }
       winner = mergePair(winner, other.finding, other.agent);
     }
-    // Deduplicate views by model+stance+note prefix
-    const seen = new Set<string>();
+    // One view per agent: keep "new"/owner first, else richest note.
+    const stanceRank: Record<string, number> = {
+      new: 4,
+      dissent: 3,
+      extend: 2,
+      agree: 1,
+    };
+    const byModel = new Map<string, (typeof winner.views)[number]>();
+    for (const view of winner.views) {
+      const prev = byModel.get(view.model);
+      if (!prev) {
+        byModel.set(view.model, view);
+        continue;
+      }
+      const prevRank = stanceRank[prev.stance] ?? 0;
+      const nextRank = stanceRank[view.stance] ?? 0;
+      if (
+        nextRank > prevRank ||
+        (nextRank === prevRank && view.note.length > prev.note.length)
+      ) {
+        byModel.set(view.model, {
+          ...view,
+          note:
+            prev.note && view.note && prev.note !== view.note
+              ? `${view.note} · also: ${prev.note.slice(0, 120)}`
+              : view.note || prev.note,
+        });
+      } else if (view.note && view.note !== prev.note) {
+        byModel.set(view.model, {
+          ...prev,
+          note: `${prev.note} · also: ${view.note.slice(0, 120)}`,
+        });
+      }
+    }
     winner = {
       ...winner,
-      views: winner.views.filter((view) => {
-        const key = `${view.model}|${view.stance}|${view.note.slice(0, 80)}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      }),
+      views: [...byModel.values()],
     };
     merged.push(winner);
   }

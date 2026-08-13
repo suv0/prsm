@@ -25,8 +25,8 @@ pnpm demo
 
 | Goal | Command |
 |---|---|
-| UI | `pnpm prsm --serve-ui --port 8788` |
-| Triage | `pnpm prsm --serve <n>` |
+| Hub | `pnpm prsm --serve-ui --port 8788` |
+| Doctor | `pnpm prsm --doctor` |
 | Typecheck | `pnpm typecheck` |
 
 ## Pull requests

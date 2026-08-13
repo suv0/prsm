@@ -29,7 +29,9 @@ Optional CLI shortcut if the user wants hands-off: `pnpm prsm --run <url>` (uses
 pnpm prsm --serve-ui
 ```
 
-Open http://127.0.0.1:8788/ → paste the PR URL → Run review (cursor + claude-code + command-code).
+Open http://127.0.0.1:8788/ → paste the PR URL → Run review (available agents in **parallel**; specialist passes also parallel).
+
+When the first agent finishes, triage at `/pr/<n>/` is already usable. Later agents merge onto the same cards.
 
 **CLI prepare only:**
 
@@ -101,20 +103,20 @@ pnpm prsm --rebuild-merge <n>
 Tell the user to open triage via:
 
 ```bash
-pnpm prsm --serve <n>
+pnpm prsm --serve-ui --port 8788
 ```
 
-→ `http://127.0.0.1:8787/` (list at `/final-review.html`). Or open the static `reviews/<n>/triage.html` (Recheck needs `--serve`). Do **not** post comments to GitHub.
+→ `http://127.0.0.1:8788/pr/<n>/` (hub home lists every local review). Recheck / Teach me need the hub. Static `reviews/<n>/triage.html` is view-only. Do **not** post comments to GitHub.
 
 ## Triage Recheck (live, one finding)
 
-With `--serve` running, the browser **Recheck** button:
+With the hub running, **Recheck** / **Teach me**:
 
-1. Sends the user's notes + that finding (file/line/code/why/fix/comment) to the **provider chosen in the dropdown**
-2. Provider returns `[]` (drop) or one updated finding
-3. Server patches `run.json`, re-renders artifacts, returns the updated card
+1. Sends notes + that finding to the **provider in the dropdown**
+2. Provider returns a recheck object (`understood`, `conclusion`, `teachMe` / `teachMeLines`, `suggestedComment`, optional `finding`)
+3. Server appends Recheck history, re-renders, does **not** auto-overwrite the paste box unless the user applies it
 
-Prefer **1–3 sentence** `reviewComment` on updates. Never post to GitHub. Avoid `--rebuild-merge` after hand/recheck edits unless the user asks (it re-merges from agent runs).
+Paste comments should sound like a teammate (concrete scenario + ask), not a compressed “Could we…?” scanner line, and not a fixed “Hm… interesting.” opener.
 
 Manual disk refresh without recheck: `pnpm prsm --render <n>`.
 

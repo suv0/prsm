@@ -24,10 +24,10 @@ import {
 } from "@review-os/providers";
 import { renderReviewFromDir, writeReviewArtifacts } from "@review-os/render";
 import type { AppConfig } from "@review-os/schemas";
-import { serveTriage } from "./serve-triage.js";
 import { serveUi } from "./serve-ui.js";
 import { printDoctorReport, runDoctor } from "./doctor.js";
 import { CLI_PROVIDERS, runWithProvider } from "./run-provider.js";
+import { runVerifyAuthorUpdates } from "./run-verify.js";
 
 function printHelp(): void {
   console.log(`PRism — see every angle before you merge
@@ -56,15 +56,18 @@ Other:
   prsm --demo
   prsm --load-only <pr-url>
   prsm --list-providers
-  prsm --doctor                       # check Node, gh, agent CLIs
+  prsm --doctor                       # check Node, gh, agent CLIs (prints install links)
   prsm --base <base> --head <head>
   prsm --agent <name>                # label this agent in runs/ + merge
   prsm --rebuild-merge <n>           # archive legacy + rebuild merged view
   prsm --render <n>                  # re-render md/html/triage from run.json (no re-merge)
-  prsm --serve <n> [--port 8787]     # local triage UI + live Recheck API
-  prsm --serve-ui [--port 8788]      # paste PR URL → run cursor+claude+command-code
+  prsm --verify <n>                  # re-check author replies + new commits on open findings
+  prsm --serve-ui [--port 8788]      # hub: connect agents, run reviews, open /pr/<n>/
+  prsm --serve [<n>] [--port 8788]   # same hub (optional PR highlight)
 
-Alias: pnpm prsm … works the same as pnpm prsm …
+Alias: pnpm review-pr … works the same as pnpm prsm …
+
+Agents and specialist passes run in parallel. Similar findings merge into one card as each agent finishes.
 `);
 }
 
@@ -79,6 +82,7 @@ function parseArgs(argv: string[]): {
   finalize?: number;
   rebuildMerge?: number;
   render?: number;
+  verify?: number;
   serve?: number;
   serveUi: boolean;
   port: number;
@@ -100,6 +104,7 @@ function parseArgs(argv: string[]): {
   let finalize: number | undefined;
   let rebuildMerge: number | undefined;
   let render: number | undefined;
+  let verify: number | undefined;
   let serve: number | undefined;
   let serveUi = false;
   let port = 8787;
@@ -176,13 +181,27 @@ function parseArgs(argv: string[]): {
         }
         break;
       }
-      case "--serve": {
+      case "--verify": {
         const value = args.shift();
-        if (!value) throw new Error("--serve requires a PR number");
-        serve = Number(value);
-        if (!Number.isFinite(serve) || serve <= 0) {
-          throw new Error(`Invalid --serve value: ${value}`);
+        if (!value) throw new Error("--verify requires a PR number");
+        verify = Number(value);
+        if (!Number.isFinite(verify) || verify <= 0) {
+          throw new Error(`Invalid --verify value: ${value}`);
         }
+        break;
+      }
+      case "--serve": {
+        // Multi-PR hub. Optional PR number focuses logs / convenience.
+        const peek = args[0];
+        if (peek && !peek.startsWith("-") && /^\d+$/.test(peek)) {
+          const value = args.shift()!;
+          serve = Number(value);
+          if (!Number.isFinite(serve) || serve <= 0) {
+            throw new Error(`Invalid --serve value: ${value}`);
+          }
+        }
+        serveUi = true;
+        if (port === 8787) port = 8788;
         break;
       }
       case "--serve-ui":
@@ -242,6 +261,7 @@ function parseArgs(argv: string[]): {
     ...(finalize !== undefined ? { finalize } : {}),
     ...(rebuildMerge !== undefined ? { rebuildMerge } : {}),
     ...(render !== undefined ? { render } : {}),
+    ...(verify !== undefined ? { verify } : {}),
     ...(serve !== undefined ? { serve } : {}),
     serveUi,
     port,
@@ -442,28 +462,37 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (parsed.verify !== undefined) {
+    const outputDir = path.resolve(
+      repoRoot,
+      config.outputDir,
+      String(parsed.verify),
+    );
+    const { report } = await runVerifyAuthorUpdates({
+      repoRoot,
+      outputDir,
+      ...(parsed.provider !== undefined ? { providerId: parsed.provider } : {}),
+      ...(parsed.prRef !== undefined ? { prRef: parsed.prRef } : {}),
+    });
+    printDone(
+      report.prNumber,
+      report.items.length,
+      outputDir,
+      [
+        `Verified with ${report.provider}`,
+        `resolved ${report.counts.resolved} · accepted ${report.counts.accepted} · needs_look ${report.counts.needs_look} · still_open ${report.counts.still_open}`,
+        "Open verify-report.html (or triage → Verify author updates)",
+      ].join("\n"),
+    );
+    return;
+  }
+
   if (parsed.serveUi) {
     await serveUi({
       repoRoot,
       config,
       port: parsed.port,
-    });
-    return;
-  }
-
-  if (parsed.serve !== undefined) {
-    const outputDir = path.resolve(
-      repoRoot,
-      config.outputDir,
-      String(parsed.serve),
-    );
-    // Ensure triage.html is current before serving.
-    await renderReviewFromDir(outputDir);
-    await serveTriage({
-      repoRoot,
-      outputDir,
-      config,
-      port: parsed.port,
+      ...(parsed.serve !== undefined ? { focusPr: parsed.serve } : {}),
     });
     return;
   }
