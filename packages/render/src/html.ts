@@ -1,7 +1,8 @@
 import type { Finding, ReviewRun } from "@review-os/schemas";
 import { githubFileUrl } from "./github-file-link.js";
 import { renderOverviewHtml } from "./overview.js";
-import { agentFindingsNavHtml, latestRunPerAgent, workspaceChromeCloseHtml, workspaceChromeCss, workspaceChromeOpenHtml } from "./agent-nav.js";
+import { agentFindingsNavHtml, latestRunPerAgent, workspaceChromeCloseHtml, workspaceChromeCss, workspaceChromeHeadHtml, workspaceChromeOpenHtml } from "./agent-nav.js";
+import { iconHtml, iconTextHtml } from "./ui-icons.js";
 
 function escapeHtml(value: string): string {
   return value
@@ -299,9 +300,9 @@ function cardHtml(
       <p class="meta">${metaInner}</p>
     </div>
     <div class="card-actions">
-      <button type="button" data-action="copy-agent" data-label="Copy for agent">Copy for agent</button>
-      <button type="button" class="btn-secondary" data-action="resolve">Resolved</button>
-      <button type="button" class="btn-secondary" data-action="unresolve" hidden>Restore</button>
+      <button type="button" class="has-ico" data-action="copy-agent" data-label="Copy for agent">${iconTextHtml("clipboard", "Copy for agent")}</button>
+      <button type="button" class="btn-secondary has-ico" data-action="resolve">${iconTextHtml("check", "Resolved")}</button>
+      <button type="button" class="btn-secondary has-ico" data-action="unresolve" hidden>${iconTextHtml("undo", "Restore")}</button>
     </div>
   </header>
   ${
@@ -313,7 +314,7 @@ function cardHtml(
   <section>
     <h3>Current code</h3>
     <div class="copy-row">
-      <button type="button" data-copy="${encodeCopyPayload(finding.currentCode)}" data-label="Copy code">Copy code</button>
+      <button type="button" class="has-ico" data-copy="${encodeCopyPayload(finding.currentCode)}" data-label="Copy code">${iconTextHtml("copy", "Copy code")}</button>
     </div>
     ${renderEditor({
       code: finding.currentCode,
@@ -342,7 +343,7 @@ function cardHtml(
     <section>
       <h3>Better code</h3>
       <div class="copy-row">
-        <button type="button" data-copy="${encodeCopyPayload(finding.betterCode)}" data-label="Copy fix">Copy fix</button>
+        <button type="button" class="has-ico" data-copy="${encodeCopyPayload(finding.betterCode)}" data-label="Copy fix">${iconTextHtml("copy", "Copy fix")}</button>
       </div>
       ${renderEditor({
         code: finding.betterCode,
@@ -358,14 +359,14 @@ function cardHtml(
     <p class="hint">Edit this into the simple GitHub comment you want. Saved in this browser for PR #${prNumber}.</p>
     <textarea class="simple-comment" rows="4" data-field="simple-comment" placeholder="Short polite comment to paste on GitHub…">${escapeHtml(finding.reviewComment)}</textarea>
     <div class="copy-row toolbar-row">
-      <button type="button" data-action="save-comment">Save comment</button>
-      <button type="button" data-action="copy-simple" data-label="Copy comment">Copy comment</button>
-      <button type="button" class="btn-secondary" data-action="reset-comment">Reset to original</button>
+      <button type="button" class="has-ico" data-action="save-comment">${iconTextHtml("save", "Save comment")}</button>
+      <button type="button" class="has-ico" data-action="copy-simple" data-label="Copy comment">${iconTextHtml("copy", "Copy comment")}</button>
+      <button type="button" class="btn-secondary has-ico" data-action="reset-comment">${iconTextHtml("rotate-ccw", "Reset to original")}</button>
     </div>
     <details class="details-block">
       <summary>Original generated comment</summary>
       <div class="copy-row">
-        <button type="button" data-copy="${encodeCopyPayload(finding.reviewComment)}" data-label="Copy original">Copy original</button>
+        <button type="button" class="has-ico" data-copy="${encodeCopyPayload(finding.reviewComment)}" data-label="Copy original">${iconTextHtml("copy", "Copy original")}</button>
       </div>
       ${renderEditor({
         code: finding.reviewComment,
@@ -381,7 +382,7 @@ function cardHtml(
     <p class="hint">After you verify in chat, jot the verdict here (stands / skip / soft). Local only.</p>
     <textarea class="notes" rows="3" data-field="notes" placeholder="e.g. Verified — post. Or: false positive, skip."></textarea>
     <div class="copy-row">
-      <button type="button" class="btn-secondary" data-action="save-notes">Save notes</button>
+      <button type="button" class="btn-secondary has-ico" data-action="save-notes">${iconTextHtml("save", "Save notes")}</button>
     </div>
   </section>
 </article>`;
@@ -392,6 +393,13 @@ function clientScript(prNumber: number): string {
 (function () {
   const PR = ${prNumber};
   const STORAGE_KEY = "review-os:pr-" + PR + ":triage:v1";
+
+  function setBtnLabel(el, text) {
+    if (!el) return;
+    const lab = el.querySelector(".btn-label");
+    if (lab) lab.textContent = text;
+    else el.textContent = text;
+  }
 
   function loadState() {
     try {
@@ -483,19 +491,21 @@ function clientScript(prNumber: number): string {
       try {
         await navigator.clipboard.writeText(value);
         button.classList.add("copied");
-        button.textContent = "Copied";
+        setBtnLabel(button, "Copied");
         setTimeout(() => {
           button.classList.remove("copied");
-          button.textContent = label;
+          setBtnLabel(button, label);
         }, 1200);
       } catch {
-        button.textContent = "Copy failed";
+        setBtnLabel(button, "Copy failed");
       }
     });
   });
 
   document.addEventListener("click", async (event) => {
-    const target = event.target;
+    const raw = event.target;
+    if (!(raw instanceof Element)) return;
+    const target = raw.closest("[data-action]");
     if (!(target instanceof HTMLElement)) return;
     const action = target.getAttribute("data-action");
     if (!action) return;
@@ -551,13 +561,13 @@ function clientScript(prNumber: number): string {
         await navigator.clipboard.writeText(text);
         target.classList.add("copied");
         const label = target.getAttribute("data-label") || "Copy comment";
-        target.textContent = "Copied";
+        setBtnLabel(target, "Copied");
         setTimeout(() => {
           target.classList.remove("copied");
-          target.textContent = label;
+          setBtnLabel(target, label);
         }, 1200);
       } catch {
-        target.textContent = "Copy failed";
+        setBtnLabel(target, "Copy failed");
       }
       return;
     }
@@ -575,14 +585,14 @@ function clientScript(prNumber: number): string {
         await navigator.clipboard.writeText(text);
         target.classList.add("copied");
         const label = target.getAttribute("data-label") || "Copy for agent";
-        target.textContent = "Copied";
+        setBtnLabel(target, "Copied");
         setTimeout(() => {
           target.classList.remove("copied");
-          target.textContent = label;
+          setBtnLabel(target, label);
         }, 1200);
         showFlash("Copied finding for another agent");
       } catch {
-        target.textContent = "Copy failed";
+        setBtnLabel(target, "Copy failed");
       }
       return;
     }
@@ -619,6 +629,7 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  ${workspaceChromeHeadHtml()}
   <title>PR #${run.prNumber} — Final Review</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -660,7 +671,7 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
       line-height: 20px;
     }
     main { max-width: 960px; margin: 0 auto; padding: 2.25rem 1.25rem 4rem; }
-    h1 { font-size: 1.85rem; margin: 0 0 0.45rem; font-weight: 600; color: #ffffff; }
+    h1 { font-size: 1.85rem; margin: 0 0 0.45rem; font-weight: 600; color: #ffffff; display: flex; align-items: center; gap: 8px; }
     h2 { margin: 0 0 0.35rem; font-size: 1.2rem; font-weight: 600; color: #ffffff; }
     h3 {
       margin: 1rem 0 0.4rem;
@@ -872,6 +883,9 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
       padding: 0.4rem 0.8rem;
       font: 600 0.82rem "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
       cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
     }
     button:hover { background: var(--accent-hover); }
     button.copied { background: var(--copied); }
@@ -916,7 +930,7 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
       letter-spacing: 0.02em;
       text-transform: uppercase;
     }
-    .agent-findings-nav a { color: var(--accent); }
+    .agent-findings-nav a { color: var(--accent); display: inline-flex; align-items: center; gap: 6px; }
     ${workspaceChromeCss()}
     .section-title { margin-top: 2rem; }
   </style>
@@ -924,8 +938,8 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
 <body class="wb-page">
   ${workspaceChromeOpenHtml({ prNumber: run.prNumber, active: "list" })}
   <main data-pr="${run.prNumber}">
-    <h1>PR #${run.prNumber} — Final Review</h1>
-    <p class="lede">${escapeHtml(run.title ?? "")}${run.demo ? " · demo mode" : ""}${run.agent ? ` · agent ${escapeHtml(run.agent)}` : ""} · <a href="triage.html">Open triage (one at a time)</a></p>
+    <h1>${iconHtml("list")} PR #${run.prNumber} — Final Review</h1>
+    <p class="lede">${escapeHtml(run.title ?? "")}${run.demo ? " · demo mode" : ""}${run.agent ? ` · agent ${escapeHtml(run.agent)}` : ""} · <a class="has-ico" href="triage.html">${iconHtml("list-checks")} Open triage (one at a time)</a></p>
     ${agentFindingsNavHtml(run, escapeHtml)}
     ${agentsSummaryHtml(run)}
     ${run.overview ? renderOverviewHtml(run.overview, escapeHtml) : ""}

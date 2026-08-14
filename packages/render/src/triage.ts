@@ -6,8 +6,10 @@ import {
   agentFindingsNavHtml,
   workspaceChromeCloseHtml,
   workspaceChromeCss,
+  workspaceChromeHeadHtml,
   workspaceChromeOpenHtml,
 } from "./agent-nav.js";
+import { iconHtml, iconTextHtml, ICON_INNER } from "./ui-icons.js";
 import { sortFindingsForTriage } from "./sort-findings.js";
 
 function escapeHtml(value: string): string {
@@ -108,6 +110,17 @@ function clientScript(): string {
   })();
   function apiUrl(path) {
     return BASE + "/api" + path;
+  }
+  var ICO = ${JSON.stringify(ICON_INNER)};
+  function ico(name) {
+    return '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      (ICO[name] || "") + "</svg>";
+  }
+  function setBtnLabel(el, text) {
+    if (!el) return;
+    var lab = el.querySelector(".btn-label");
+    if (lab) lab.textContent = text;
+    else el.textContent = text;
   }
   let all = data.findings.slice();
   let queueIndex = 0;
@@ -562,13 +575,13 @@ function clientScript(): string {
     }
     host.innerHTML = items.map(function (entry, idx) {
       var teach = entry.teachMe
-        ? '<div class="recheck-teach"><div class="teach-head"><p class="hint" style="margin:0"><strong>Teach me</strong></p><button type="button" class="btn-copy-teach-entry" data-idx="' + idx + '">Copy lesson</button></div><div class="teach-prose recheck-teach-body"></div></div>'
+        ? '<div class="recheck-teach"><div class="teach-head"><p class="hint" style="margin:0"><strong>Teach me</strong></p><button type="button" class="btn-copy-teach-entry" data-idx="' + idx + '">' + ico("copy") + '<span class="btn-label">Copy lesson</span></button></div><div class="teach-prose recheck-teach-body"></div></div>'
         : "";
       var details = entry.details
         ? '<details><summary>More details</summary><p class="recheck-details"></p></details>'
         : "";
       var suggest = entry.suggestedComment
-        ? '<div class="recheck-suggest"><p class="hint">Suggested GitHub comment <strong>(for the PR author — Copy to paste on the PR)</strong></p><pre class="recheck-suggest-body"></pre><div class="toolbar"><button type="button" class="btn-copy-suggest" data-idx="' + idx + '">Copy</button><button type="button" class="btn-secondary btn-apply-suggest" data-idx="' + idx + '">Use in paste box</button></div></div>'
+        ? '<div class="recheck-suggest"><p class="hint">Suggested GitHub comment <strong>(for the PR author — Copy to paste on the PR)</strong></p><pre class="recheck-suggest-body"></pre><div class="toolbar"><button type="button" class="btn-copy-suggest" data-idx="' + idx + '">' + ico("copy") + '<span class="btn-label">Copy</span></button><button type="button" class="btn-secondary btn-apply-suggest" data-idx="' + idx + '">' + ico("check") + '<span class="btn-label">Use in paste box</span></button></div></div>'
         : "";
       var latest = idx === 0 ? ' is-latest' : '';
       return (
@@ -1139,7 +1152,7 @@ function clientScript(): string {
     verifying = Boolean(running);
     if (els.verifyBtn) {
       els.verifyBtn.disabled = running || !SERVED;
-      els.verifyBtn.textContent = running ? "Verifying…" : "Verify author updates";
+      setBtnLabel(els.verifyBtn, running ? "Verifying…" : "Verify author updates");
     }
     if (els.verifyPanel) els.verifyPanel.hidden = false;
   }
@@ -1347,11 +1360,11 @@ function clientScript(): string {
     rechecking = Boolean(running);
     if (els.recheckBtn) {
       els.recheckBtn.disabled = running || !SERVED;
-      els.recheckBtn.textContent = running ? "Rechecking…" : "Recheck";
+      setBtnLabel(els.recheckBtn, running ? "Rechecking…" : "Ask");
     }
     if (els.teachBtn) {
       els.teachBtn.disabled = running || !SERVED;
-      els.teachBtn.textContent = running ? "Teaching…" : "Teach me";
+      setBtnLabel(els.teachBtn, running ? "Teaching…" : "Teach me");
     }
     if (els.notes) els.notes.disabled = running;
     if (els.provider) els.provider.disabled = running || !SERVED;
@@ -1691,6 +1704,7 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  ${workspaceChromeHeadHtml()}
   <title>PR #${run.prNumber} — Triage</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -1755,7 +1769,8 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
     }
     .queue-head {
       position: sticky; top: 0; z-index: 2;
-      display: flex; justify-content: space-between; align-items: baseline;
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 8px;
       padding: 12px 12px 8px;
       font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
       text-transform: uppercase; color: var(--muted);
@@ -1847,6 +1862,9 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       text-decoration: none;
       padding: 8px 12px;
       border-bottom: 2px solid transparent;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
     }
     .agent-findings-nav a:hover { color: #fff; }
     .agent-findings-nav a.is-active, .agent-findings-nav span.is-active {
@@ -2230,6 +2248,9 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       padding: 8px 12px;
       font: 600 12px/16px "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
       cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
     }
     button:hover { background: var(--accent-hover); }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -2273,12 +2294,16 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       background: var(--bg-elevated);
       padding: 0 12px 8px;
     }
+    .queue-head-label { display: inline-flex; align-items: center; gap: 6px; }
     details.block > summary {
       padding: 10px 0;
       color: #fff;
       font-size: 13px;
       font-weight: 600;
       cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
     summary { cursor: pointer; }
     #empty {
@@ -2418,7 +2443,7 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
   ${workspaceChromeOpenHtml({ prNumber: run.prNumber, active: "triage" })}
   <div class="triage-shell">
     <aside class="queue-pane">
-      <div class="queue-head">Queue <span id="queue-count">…</span></div>
+      <div class="queue-head"><span class="queue-head-label">${iconHtml("list")} Queue</span> <span id="queue-count">…</span></div>
       <div class="queue-filters">
         <label class="toggle"><input type="checkbox" id="show-resolved" /> Include resolved</label>
         <label class="toggle"><input type="checkbox" id="show-false-alarms" /> Include false alarms</label>
@@ -2435,10 +2460,10 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
         <div class="stage-tools">
           <span id="progress-text">…</span>
           <details class="verify-fold">
-            <summary>Verify updates</summary>
+            <summary>${iconHtml("shield-check")} Verify updates</summary>
             <div class="verify-body">
               <div class="verify-agents" id="verify-agents" aria-label="Agents for verify"></div>
-              <button type="button" id="btn-verify" disabled>Verify author updates</button>
+              <button type="button" id="btn-verify" disabled>${iconTextHtml("shield-check", "Verify author updates")}</button>
               <section id="verify-panel" class="verify-panel" hidden>
                 <p id="verify-status" class="verify-status"></p>
                 <p id="verify-live" class="hint" hidden></p>
@@ -2450,7 +2475,7 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       </header>
       <div class="stage-scroll">
   <main>
-    ${run.overview ? `<details class="overview-fold"><summary>PR overview</summary>${renderOverviewHtml(run.overview, escapeHtml)}</details>` : ""}
+    ${run.overview ? `<details class="overview-fold"><summary>${iconHtml("book-open")} PR overview</summary>${renderOverviewHtml(run.overview, escapeHtml)}</details>` : ""}
     <p id="serve-hint" hidden></p>
     <p id="flash" hidden></p>
 
@@ -2475,8 +2500,8 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       <section>
         <h3>Current code</h3>
         <div class="toolbar">
-          <button type="button" class="btn-secondary" id="btn-copy-current-code">Copy code</button>
-          <button type="button" class="btn-secondary" id="btn-copy-agent-top">Copy for agent</button>
+          <button type="button" class="btn-secondary" id="btn-copy-current-code">${iconTextHtml("copy", "Copy code")}</button>
+          <button type="button" class="btn-secondary" id="btn-copy-agent-top">${iconTextHtml("clipboard", "Copy for agent")}</button>
         </div>
         <div class="editor-host" id="current-code"></div>
       </section>
@@ -2485,23 +2510,23 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
         <div class="suggest-head">
           <h3>Suggested comment</h3>
           <div class="toolbar">
-            <button type="button" class="btn-secondary" id="btn-reset-comment">Reset</button>
-            <button type="button" class="btn-secondary" id="btn-copy-comment">Copy</button>
-            <button type="button" id="btn-save-comment">Save</button>
+            <button type="button" class="btn-secondary" id="btn-reset-comment">${iconTextHtml("rotate-ccw", "Reset")}</button>
+            <button type="button" class="btn-secondary" id="btn-copy-comment">${iconTextHtml("copy", "Copy")}</button>
+            <button type="button" id="btn-save-comment">${iconTextHtml("save", "Save")}</button>
           </div>
         </div>
         <textarea id="simple-comment" rows="5" placeholder="Short polite comment…"></textarea>
         <details>
           <summary>Original generated comment</summary>
           <div class="toolbar">
-            <button type="button" class="btn-secondary" id="btn-copy-original">Copy original</button>
+            <button type="button" class="btn-secondary" id="btn-copy-original">${iconTextHtml("copy", "Copy original")}</button>
           </div>
           <pre class="comment-body" id="original-comment"></pre>
         </details>
       </section>
 
       <details class="block">
-        <summary>Details (why / fix / better code)</summary>
+        <summary>${iconHtml("sliders")} Details (why / fix / better code)</summary>
         <section>
           <h3>Why this is weak</h3>
           <p id="why-weak"></p>
@@ -2513,32 +2538,32 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
         <section>
           <h3>Better code</h3>
           <div class="toolbar">
-            <button type="button" class="btn-secondary" id="btn-copy-better-code">Copy better code</button>
+            <button type="button" class="btn-secondary" id="btn-copy-better-code">${iconTextHtml("copy", "Copy better code")}</button>
           </div>
           <div class="editor-host" id="better-code"></div>
         </section>
       </details>
 
       <details class="block">
-        <summary>Teach me (Generate lesson)</summary>
+        <summary>${iconHtml("graduation-cap")} Teach me (Generate lesson)</summary>
         <section class="teach-section">
         <div class="teach-head">
           <h3>Explain simply</h3>
-          <button type="button" id="btn-copy-teach">Copy lesson</button>
+          <button type="button" id="btn-copy-teach">${iconTextHtml("copy", "Copy lesson")}</button>
         </div>
         <p class="hint">A plain walkthrough of this finding. Teach me runs one agent for a teammate-style lesson, then saves it in Recheck history.</p>
         <div id="teach-simple" class="teach-simple"></div>
         <div class="toolbar teach-actions" style="margin-top:0.5rem">
           <label for="provider-teach" class="teach-provider-label">Agent</label>
           <select id="provider-teach" aria-label="Teach me agent"></select>
-          <button type="button" id="btn-teach-me" disabled>Teach me</button>
-          <button type="button" class="btn-secondary" id="btn-copy-teach-bottom">Copy lesson</button>
+          <button type="button" id="btn-teach-me" disabled>${iconTextHtml("graduation-cap", "Teach me")}</button>
+          <button type="button" class="btn-secondary" id="btn-copy-teach-bottom">${iconTextHtml("copy", "Copy lesson")}</button>
         </div>
         </section>
       </details>
 
       <details class="block" open>
-        <summary>Recheck (Ask follow-up)</summary>
+        <summary>${iconHtml("message-circle")} Recheck (Ask follow-up)</summary>
       <section>
         <p class="hint">Ask a follow-up. Answers land in Recheck history.</p>
         <textarea id="notes" rows="3" placeholder="e.g., Does wrapping it in db.transaction() solve this entirely?"></textarea>
@@ -2547,8 +2572,8 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
           <select id="provider" aria-label="Provider">
             <option value="">Loading…</option>
           </select>
-          <button type="button" id="btn-recheck" disabled>Ask</button>
-          <button type="button" class="btn-secondary" id="btn-copy-notes">Copy notes</button>
+          <button type="button" id="btn-recheck" disabled>${iconTextHtml("message-circle", "Ask")}</button>
+          <button type="button" class="btn-secondary" id="btn-copy-notes">${iconTextHtml("copy", "Copy notes")}</button>
         </div>
         <div id="recheck-live-panel" class="recheck-live-panel" hidden>
           <p class="hint" style="margin:0 0 0.35rem"><strong>Live run</strong> — disappears when finished; the result card is saved in history.</p>
@@ -2559,7 +2584,7 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       </section>
       </details>
       <details class="block">
-        <summary>Recheck history</summary>
+        <summary>${iconHtml("layers")} Recheck history</summary>
         <p class="hint" style="margin-top:0">Newest first.</p>
         <div id="recheck-history"></div>
       </details>
@@ -2568,13 +2593,13 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       </div>
     <nav class="bottom-nav" aria-label="Triage navigation">
       <span class="kbd-hint"><kbd>j</kbd> <kbd>k</kbd> navigate · <kbd>R</kbd> resolve</span>
-      <button type="button" class="btn-secondary" id="btn-back">Back</button>
-      <button type="button" class="btn-secondary" id="btn-false-alarm" hidden>False Alarm</button>
-      <button type="button" class="btn-secondary" id="btn-copy-agent">Copy for agent</button>
-      <button type="button" class="btn-secondary" id="btn-restore" hidden>Restore</button>
-      <button type="button" class="btn-secondary" id="btn-reopen" hidden>Reopen</button>
-      <button type="button" class="btn-secondary" id="btn-resolve">Resolved</button>
-      <button type="button" id="btn-next">Next finding →</button>
+      <button type="button" class="btn-secondary" id="btn-back">${iconTextHtml("chevron-left", "Back")}</button>
+      <button type="button" class="btn-secondary" id="btn-false-alarm" hidden>${iconTextHtml("bell-off", "False Alarm")}</button>
+      <button type="button" class="btn-secondary" id="btn-copy-agent">${iconTextHtml("clipboard", "Copy for agent")}</button>
+      <button type="button" class="btn-secondary" id="btn-restore" hidden>${iconTextHtml("undo", "Restore")}</button>
+      <button type="button" class="btn-secondary" id="btn-reopen" hidden>${iconTextHtml("rotate-ccw", "Reopen")}</button>
+      <button type="button" class="btn-secondary" id="btn-resolve">${iconTextHtml("check", "Resolved")}</button>
+      <button type="button" id="btn-next">${iconTextHtml("chevron-right", "Next finding")}</button>
     </nav>
     </div>
   </div>

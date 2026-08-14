@@ -110,7 +110,7 @@ The hub (`pnpm prsm`, or `--serve-ui` / `--serve`) is the main UI:
 
 | Page | What |
 |---|---|
-| `http://127.0.0.1:8788/` | Workbench: **Home** (review table), **New Review** wizard, **Live run**, **Settings** (GitHub + agents). Top tabs: Live run / Triage / List / Verify for the selected PR. |
+| `http://127.0.0.1:8788/` | Workbench: **Home** (review table), **New Review** wizard, **Live run**, **Settings** (GitHub + agents). Top tabs: Live run / Triage / List / Verify for the selected PR. The sidebar collapses to icons under ~960px; use the panel toggle to expand or collapse. |
 | `http://127.0.0.1:8788/pr/<n>/` | One-finding-at-a-time triage (same sidebar + workspace tabs as the hub). List and Verify keep that chrome; Verify shows an empty state until you run author-update verify. |
 
 On a finding you can:

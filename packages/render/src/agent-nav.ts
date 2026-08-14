@@ -1,4 +1,11 @@
 import type { AgentRunSummary, ReviewRun } from "@review-os/schemas";
+import { iconHtml, iconTextHtml } from "./ui-icons.js";
+import {
+  sidebarChromeCss,
+  sidebarToggleButtonHtml,
+  sidebarToggleScript,
+  workspaceChromeHeadHtml,
+} from "./sidebar-chrome.js";
 
 function latestRunPerAgent(run: ReviewRun): AgentRunSummary[] {
   if (!run.agents?.length) return [];
@@ -17,6 +24,7 @@ export type WorkspaceTab = "live" | "triage" | "list" | "verify";
 /** Shared workbench chrome (sidebar + sticky top tabs) for hub PR pages. */
 export function workspaceChromeCss(): string {
   return `
+    ${sidebarChromeCss()}
     html, body.wb-page {
       height: 100%;
       margin: 0;
@@ -25,7 +33,7 @@ export function workspaceChromeCss(): string {
     }
     .wb-app {
       display: grid;
-      grid-template-columns: 260px 1fr;
+      grid-template-columns: var(--sidebar-current) 1fr;
       height: 100%;
       min-height: 0;
       background: #121414;
@@ -33,6 +41,7 @@ export function workspaceChromeCss(): string {
       font-family: "Hanken Grotesk", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
       font-size: 13px;
       line-height: 20px;
+      transition: grid-template-columns 0.18s ease;
     }
     .wb-sidebar {
       display: flex;
@@ -40,6 +49,8 @@ export function workspaceChromeCss(): string {
       background: #1a1c1c;
       border-right: 1px solid #3e4850;
       min-height: 0;
+      min-width: 0;
+      overflow: hidden;
     }
     .wb-brand-row {
       display: flex;
@@ -68,7 +79,9 @@ export function workspaceChromeCss(): string {
     }
     .wb-nav { display: flex; flex-direction: column; padding: 0; }
     .wb-nav a {
-      display: block;
+      display: flex;
+      align-items: center;
+      gap: 8px;
       color: #e2e2e2;
       text-decoration: none;
       font: 600 13px/20px "Hanken Grotesk", sans-serif;
@@ -87,7 +100,9 @@ export function workspaceChromeCss(): string {
       padding: 8px 0;
     }
     .wb-side-foot a {
-      display: block;
+      display: flex;
+      align-items: center;
+      gap: 8px;
       color: #bec8d1;
       text-decoration: none;
       font: 600 13px/20px "Hanken Grotesk", sans-serif;
@@ -122,6 +137,9 @@ export function workspaceChromeCss(): string {
       text-decoration: none;
       font-size: 13px;
       white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
     }
     .ws-bar nav {
       display: flex;
@@ -135,6 +153,9 @@ export function workspaceChromeCss(): string {
       font-weight: 600;
       padding: 8px 10px;
       border-bottom: 2px solid transparent;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
     }
     .ws-bar nav a:hover { color: #fff; }
     .ws-bar nav a.is-active {
@@ -169,46 +190,55 @@ export function workspaceChromeOpenHtml(options: {
   const side = options.sideActive ?? "home";
   const sideClass = (id: typeof side) =>
     side === id ? ' class="is-active"' : "";
-  const tab = (id: WorkspaceTab, href: string, label: string, disabled = false) => {
+  const tab = (
+    id: WorkspaceTab,
+    href: string,
+    icon: "zap" | "list-checks" | "list" | "shield-check",
+    label: string,
+    disabled = false,
+  ) => {
+    const inner = `${iconHtml(icon)}<span>${label}</span>`;
     if (disabled) {
-      return `<a href="#" class="is-disabled" aria-disabled="true" title="Not available yet">${label}</a>`;
+      return `<a href="#" class="is-disabled" aria-disabled="true" title="Not available yet">${inner}</a>`;
     }
-    return `<a href="${href}"${id === options.active ? ' class="is-active"' : ""}>${label}</a>`;
+    return `<a href="${href}"${id === options.active ? ' class="is-active"' : ""}>${inner}</a>`;
   };
   const verifyHref = `/pr/${n}/verify-report.html`;
   return `<div class="wb-app">
-    <aside class="wb-sidebar" aria-label="PRism">
-      <div class="wb-brand-row">
+    <aside class="wb-sidebar hub-sidebar" id="hub-sidebar" aria-label="PRism">
+      <div class="wb-brand-row brand-row">
         <div class="wb-logo">P</div>
-        <div>
+        <div class="brand-copy">
           <div class="wb-brand">PRism</div>
           <p class="wb-brand-sub">Local Review Desk</p>
         </div>
+        ${sidebarToggleButtonHtml()}
       </div>
       <nav class="wb-nav">
-        <a href="/#home"${sideClass("home")}>Home</a>
-        <a href="/#run"${sideClass("run")}>New Review</a>
-        <a href="/#settings"${sideClass("settings")}>Settings</a>
+        <a href="/#home"${sideClass("home")} title="Home" aria-label="Home">${iconTextHtml("home", "Home", "nav-label")}</a>
+        <a href="/#run"${sideClass("run")} title="New Review" aria-label="New Review">${iconTextHtml("plus", "New Review", "nav-label")}</a>
+        <a href="/#settings"${sideClass("settings")} title="Settings" aria-label="Settings">${iconTextHtml("settings", "Settings", "nav-label")}</a>
       </nav>
       <div class="wb-side-foot">
-        <a href="/#live"${sideClass("live")}>Status</a>
+        <a href="/#live"${sideClass("live")} title="Status" aria-label="Status">${iconTextHtml("activity", "Status", "nav-label")}</a>
       </div>
     </aside>
     <div class="wb-stage">
       <header class="ws-bar">
-        <a class="ws-brand" href="/">PRism Workspace</a>
+        <a class="ws-brand" href="/">${iconHtml("layers")} PRism Workspace</a>
         <nav aria-label="Workspace">
-          ${tab("live", "/#live", "Live run")}
-          ${tab("triage", `/pr/${n}/`, "Triage")}
-          ${tab("list", `/pr/${n}/final-review.html`, "List")}
-          ${tab("verify", verifyHref, "Verify", options.verifyAvailable === false)}
+          ${tab("live", "/#live", "zap", "Live run")}
+          ${tab("triage", `/pr/${n}/`, "list-checks", "Triage")}
+          ${tab("list", `/pr/${n}/final-review.html`, "list", "List")}
+          ${tab("verify", verifyHref, "shield-check", "Verify", options.verifyAvailable === false)}
         </nav>
       </header>
       <div class="wb-body">`;
 }
 
 export function workspaceChromeCloseHtml(): string {
-  return `</div></div></div>`;
+  return `</div></div></div>
+<script>${sidebarToggleScript()}</script>`;
 }
 
 /** @deprecated Prefer open/close shell helpers for full sidebar chrome. */
@@ -236,19 +266,19 @@ export function agentFindingsNavHtml(
   if (agents.length > 0) {
     const mergedActive = !run.agent ? ' class="is-active"' : "";
     parts.push(
-      `<a href="${merged}"${mergedActive}>Merged ${mergedCount}</a>`,
+      `<a href="${merged}"${mergedActive}>${iconHtml("layers")} Merged ${mergedCount}</a>`,
     );
     for (const entry of agents) {
       const href = `/pr/${n}/runs/${encodeURIComponent(entry.id)}/triage.html`;
       const active = run.agent === entry.agent ? ' class="is-active"' : "";
       parts.push(
-        `<a href="${href}"${active}>${escapeHtml(entry.agent)} ${entry.findingCount}</a>`,
+        `<a href="${href}"${active}>${iconHtml("bot")} ${escapeHtml(entry.agent)} ${entry.findingCount}</a>`,
       );
     }
   } else if (run.agent) {
-    parts.push(`<a href="${merged}">Merged</a>`);
+    parts.push(`<a href="${merged}">${iconHtml("layers")} Merged</a>`);
     parts.push(
-      `<span class="is-active">This page: ${escapeHtml(run.agent)} only</span>`,
+      `<span class="is-active">${iconHtml("bot")} This page: ${escapeHtml(run.agent)} only</span>`,
     );
   }
 
@@ -256,4 +286,4 @@ export function agentFindingsNavHtml(
   return `<nav class="agent-findings-nav" aria-label="Agent findings">${parts.join("")}</nav>`;
 }
 
-export { latestRunPerAgent };
+export { latestRunPerAgent, workspaceChromeHeadHtml };

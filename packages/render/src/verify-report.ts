@@ -2,8 +2,10 @@ import type { VerifyReport, VerifyStatus } from "@review-os/schemas";
 import {
   workspaceChromeCloseHtml,
   workspaceChromeCss,
+  workspaceChromeHeadHtml,
   workspaceChromeOpenHtml,
 } from "./agent-nav.js";
+import { iconHtml } from "./ui-icons.js";
 
 function escapeHtml(value: string): string {
   return value
@@ -35,7 +37,8 @@ function pageCss(): string {
     :root { --bg:#121414; --card:#1e2020; --line:#3e4850; --ink:#e2e2e2; --muted:#bec8d1; --ok:#3d7a45; --warn:#dcdcaa; --bad:#ffb4ab; --acc:#4fc1ff; }
     ${workspaceChromeCss()}
     .wb-body > main { max-width:860px; }
-    h1 { color:#fff; margin:0 0 .35rem; font-size:18px; }
+    h1 { color:#fff; margin:0 0 .35rem; font-size:18px; display:flex; align-items:center; gap:8px; }
+    .counts li { display:inline-flex; align-items:center; gap:6px; }
     .lede { color:var(--muted); }
     .summary { background:var(--card); border:1px solid var(--line); border-radius:4px; padding:1rem 1.1rem; margin:1rem 0; }
     .counts { display:flex; flex-wrap:wrap; gap:.75rem 1.25rem; margin:.5rem 0 0; padding:0; list-style:none; }
@@ -49,7 +52,7 @@ function pageCss(): string {
     .follow { background:#0d0e0f; border:1px solid var(--line); border-radius:4px; padding:.65rem .75rem; white-space:pre-wrap; font:0.85rem "JetBrains Mono",ui-monospace,monospace; }
     .agents { margin:.5rem 0 0; padding-left:1.1rem; color:var(--muted); font-size:.88rem; }
     .agents strong { color:var(--ink); }
-    a { color:var(--acc); }
+    .muted a { display: inline-flex; align-items: center; gap: 4px; }
     h3 { margin:.4rem 0; color:#fff; font-size:1.02rem; }
   `;
 }
@@ -65,6 +68,7 @@ export function renderVerifyPlaceholderHtml(options: {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  ${workspaceChromeHeadHtml()}
   <title>PR #${options.prNumber} — Verify</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -74,11 +78,11 @@ export function renderVerifyPlaceholderHtml(options: {
 <body class="wb-page">
   ${workspaceChromeOpenHtml({ prNumber: options.prNumber, active: "verify" })}
   <main>
-    <h1>PR #${options.prNumber} — Verify author updates</h1>
+    <h1>${iconHtml("shield-check")} PR #${options.prNumber} — Verify author updates</h1>
     <p class="lede">${title || "No verify report on disk yet."}</p>
     <section class="summary">
       <p>Run <strong>Verify author updates</strong> from triage after the author pushed or replied. That writes <code>verify-report.html</code> here.</p>
-      <p class="muted" style="margin:.75rem 0 0"><a href="./">Open triage</a> · <a href="final-review.html">List</a> · <a href="/">Home</a></p>
+      <p class="muted" style="margin:.75rem 0 0"><a href="./">${iconHtml("list-checks")} Open triage</a> · <a href="final-review.html">${iconHtml("list")} List</a> · <a href="/">${iconHtml("home")} Home</a></p>
     </section>
   </main>
   ${workspaceChromeCloseHtml()}
@@ -141,6 +145,7 @@ export function renderVerifyReportHtml(report: VerifyReport): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  ${workspaceChromeHeadHtml()}
   <title>PR #${report.prNumber} — Verify author updates</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -150,22 +155,22 @@ export function renderVerifyReportHtml(report: VerifyReport): string {
 <body class="wb-page">
   ${workspaceChromeOpenHtml({ prNumber: report.prNumber, active: "verify" })}
   <main>
-    <h1>PR #${report.prNumber} — Verify author updates</h1>
+    <h1>${iconHtml("shield-check")} PR #${report.prNumber} — Verify author updates</h1>
     <p class="lede">${escapeHtml(report.title ?? "")}${report.prUrl ? ` · <a href="${escapeHtml(report.prUrl)}">${escapeHtml(report.prUrl)}</a>` : ""}</p>
     <section class="summary">
       <strong>Provider:</strong> ${escapeHtml(report.provider)} · ${escapeHtml(report.createdAt)}
       <ul class="counts">
-        <li>Resolved: <strong>${report.counts.resolved}</strong></li>
-        <li>Accepted: <strong>${report.counts.accepted}</strong></li>
-        <li>Needs look: <strong>${report.counts.needs_look}</strong></li>
-        <li>Still open: <strong>${report.counts.still_open}</strong></li>
+        <li>${iconHtml("check")} Resolved: <strong>${report.counts.resolved}</strong></li>
+        <li>${iconHtml("check")} Accepted: <strong>${report.counts.accepted}</strong></li>
+        <li>${iconHtml("alert-triangle")} Needs look: <strong>${report.counts.needs_look}</strong></li>
+        <li>${iconHtml("x-circle")} Still open: <strong>${report.counts.still_open}</strong></li>
       </ul>
       <p class="muted" style="margin:.75rem 0 0">Agents: ${escapeHtml(
         report.providers?.length
           ? report.providers.join(", ")
           : report.provider,
       )}</p>
-      <p class="muted" style="margin:.75rem 0 0"><a href="./">Triage</a> · <a href="final-review.html">List</a> · <a href="/">Home</a></p>
+      <p class="muted" style="margin:.75rem 0 0"><a href="./">${iconHtml("list-checks")} Triage</a> · <a href="final-review.html">${iconHtml("list")} List</a> · <a href="/">${iconHtml("home")} Home</a></p>
     </section>
     ${items || "<p class='muted'>No open findings to verify.</p>"}
     ${unmatched}
