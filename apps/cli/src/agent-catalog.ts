@@ -50,10 +50,10 @@ export const AGENT_CATALOG: AgentCatalogEntry[] = [
     installUrl: "https://commandcode.ai/",
     setupSteps: [
       "Install Command Code (`command-code`)",
-      "Complete its onboarding / login",
-      "Confirm with `command-code --help`",
+      "Complete its onboarding / login (`command-code login`)",
+      "Confirm with `command-code --version` (avoid `--help` — it can start a TUI)",
     ],
-    loginHint: "command-code (finish onboarding if prompted)",
+    loginHint: "command-code login",
   },
 ];
 

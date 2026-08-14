@@ -96,3 +96,76 @@ test("salvages truncated array missing closing bracket", () => {
   });
   assert.equal(findings.length, 2);
 });
+
+test("parses findings after a command-code session banner", () => {
+  const text = `session: f91c3f00-0c34-40e7-b012-ad0abfdf011f
+[${JSON.stringify(baseFinding)}]
+`;
+  const findings = parseFindingsFromModelText(text, {
+    passId: "correctness",
+    provider: "command-code",
+  });
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0]?.file, "src/a.ts");
+});
+
+test("parses findings from command-code json print-mode result", () => {
+  const text = [
+    `{"type":"event","event":{"type":"tool_running","toolName":"read_file"}}`,
+    `{"type":"result","subtype":"success","finalText":${JSON.stringify(JSON.stringify([baseFinding]))}}`,
+  ].join("\n");
+  const findings = parseFindingsFromModelText(text, {
+    passId: "correctness",
+    provider: "command-code",
+  });
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0]?.file, "src/a.ts");
+});
+
+test("parses findings from command-code json print-mode result amid heavy delta noise", () => {
+  const deltaLines = Array.from({ length: 5_000 }, (_, i) =>
+    JSON.stringify({
+      type: "thinking_delta",
+      text: `reasoning token ${i} `.repeat(20),
+    }),
+  );
+  const textDeltaLines = Array.from({ length: 200 }, () =>
+    JSON.stringify({ type: "text_delta", text: "x".repeat(500) }),
+  );
+  const updateLines = Array.from({ length: 50 }, () =>
+    JSON.stringify({ type: "message_update", message: { role: "assistant" } }),
+  );
+  const runEndLine = JSON.stringify({
+    type: "run_end",
+    messages: Array.from({ length: 1_000 }, (_, i) => ({
+      role: i % 2 === 0 ? "user" : "assistant",
+      content: "full transcript entry ".repeat(50),
+    })),
+  });
+  const text = [
+    `{"type":"event","event":{"type":"tool_running","toolName":"read_file"}}`,
+    ...deltaLines,
+    ...textDeltaLines,
+    ...updateLines,
+    runEndLine,
+    `{"type":"result","subtype":"success","finalText":${JSON.stringify(JSON.stringify([baseFinding]))}}`,
+  ].join("\n");
+
+  const findings = parseFindingsFromModelText(text, {
+    passId: "correctness",
+    provider: "command-code",
+  });
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0]?.file, "src/a.ts");
+});
+
+test("throws when JSON objects are not findings", () => {
+  assert.throws(
+    () =>
+      parseFindingsFromModelText('[{"summary":"a plan, not findings"}]', {
+        passId: "correctness",
+        provider: "command-code",
+      }),
+    /not findings/i,
+  );
+});

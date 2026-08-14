@@ -1,6 +1,7 @@
 import type { Finding, ReviewRun } from "@review-os/schemas";
 import { githubFileUrl } from "./github-file-link.js";
 import { renderOverviewHtml } from "./overview.js";
+import { agentFindingsNavHtml, latestRunPerAgent, workspaceChromeCloseHtml, workspaceChromeCss, workspaceChromeOpenHtml } from "./agent-nav.js";
 
 function escapeHtml(value: string): string {
   return value
@@ -210,16 +211,17 @@ function viewsHtml(finding: Finding): string {
 }
 
 function agentsSummaryHtml(run: ReviewRun): string {
-  if (!run.agents?.length) return "";
-  const items = run.agents
-    .map(
-      (agent) =>
-        `<li><span class="chip">${escapeHtml(agent.agent)}</span> ${agent.findingCount} finding(s) · <code>${escapeHtml(agent.id)}</code></li>`,
-    )
+  const agents = latestRunPerAgent(run);
+  if (agents.length === 0) return "";
+  const items = agents
+    .map((agent) => {
+      const href = `/pr/${run.prNumber}/runs/${encodeURIComponent(agent.id)}/triage.html`;
+      return `<li><a href="${href}"><span class="chip">${escapeHtml(agent.agent)}</span> ${agent.findingCount} finding(s)</a> · <code>${escapeHtml(agent.id)}</code></li>`;
+    })
     .join("");
   return `<section class="summary agents">
-      <h2>Agent runs (merged)</h2>
-      <p class="meta">Same issue from multiple agents is one card; differing wording shows under Agent perspectives.</p>
+      <h2>Agent runs</h2>
+      <p class="meta">Merged triage combines everyone. Click an agent to see <em>only</em> that agent’s findings.</p>
       <ul>${items}</ul>
     </section>`;
 }
@@ -618,17 +620,19 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PR #${run.prNumber} — Final Review</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
   <style>
-    /* VS Code Dark+ — high contrast, readable */
     :root {
-      --bg: #1e1e1e;
-      --bg-elevated: #252526;
-      --ink: #d4d4d4;
-      --muted: #a0a0a0;
-      --card: #252526;
-      --line: #3c3c3c;
-      --accent: #3794ff;
-      --accent-hover: #4aa0ff;
+      --bg: #121414;
+      --bg-elevated: #1a1c1c;
+      --ink: #e2e2e2;
+      --muted: #bec8d1;
+      --card: #1e2020;
+      --line: #3e4850;
+      --accent: #4fc1ff;
+      --accent-hover: #84cfff;
       --code-bg: #1e1e1e;
       --comment-bg: #1b3a4b;
       --blocker: #f14c4c;
@@ -646,12 +650,14 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
       --resolved: #3d7a45;
     }
     * { box-sizing: border-box; }
+    html { color-scheme: dark; }
     body {
       margin: 0;
-      font-family: "Segoe UI", Consolas, ui-sans-serif, system-ui, sans-serif;
+      font-family: "Hanken Grotesk", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+      font-size: 13px;
       color: var(--ink);
       background: var(--bg);
-      line-height: 1.55;
+      line-height: 20px;
     }
     main { max-width: 960px; margin: 0 auto; padding: 2.25rem 1.25rem 4rem; }
     h1 { font-size: 1.85rem; margin: 0 0 0.45rem; font-weight: 600; color: #ffffff; }
@@ -668,7 +674,7 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
     .summary {
       background: var(--bg-elevated);
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 4px;
       padding: 1.1rem 1.25rem;
       margin-bottom: 1.5rem;
     }
@@ -690,7 +696,7 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
     .card {
       background: var(--card);
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 4px;
       padding: 1.1rem 1.25rem;
       margin: 0.9rem 0 1.2rem;
     }
@@ -717,7 +723,7 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
       background: #2d2d2d;
       padding: 0.1rem 0.35rem;
       border-radius: 4px;
-      font-family: Consolas, "Cascadia Code", ui-monospace, monospace;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
       font-size: 0.86rem;
     }
     p { margin: 0.35rem 0 0.55rem; color: var(--fg); }
@@ -726,12 +732,13 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
     textarea.simple-comment, textarea.notes {
       width: 100%;
       resize: vertical;
-      background: #1b1b1b;
-      color: #e6edf3;
+      background: #0d0e0f;
+      color: #e2e2e2;
       border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 0.7rem 0.8rem;
-      font: 0.92rem/1.5 Consolas, "Cascadia Code", ui-monospace, monospace;
+      border-radius: 4px;
+      padding: 10px 12px;
+      font: 13px/20px "JetBrains Mono", ui-monospace, monospace;
+      color-scheme: dark;
     }
     textarea.simple-comment:focus, textarea.notes:focus {
       outline: 1px solid var(--accent);
@@ -803,7 +810,7 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
       font-size: 0.75rem;
       padding: 0.28rem 0.75rem;
       border-bottom: 1px solid var(--line);
-      font-family: Consolas, "Cascadia Code", ui-monospace, monospace;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
       overflow: auto;
       white-space: nowrap;
     }
@@ -811,7 +818,7 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
     .editor-code {
       margin: 0;
       padding: 0.5rem 0;
-      font-family: Consolas, "Cascadia Code", "Fira Code", ui-monospace, monospace;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
       font-size: 0.9rem;
       line-height: 1.6;
       min-width: max-content;
@@ -843,7 +850,7 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
     .editor-comment .editor-titlebar { background: #243b4a; }
     .editor-comment .editor-tab.active {
       background: var(--comment-bg);
-      box-shadow: inset 0 2px 0 #3794ff;
+      box-shadow: inset 0 2px 0 var(--accent);
     }
     .comment-body {
       margin: 0;
@@ -851,7 +858,7 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
       white-space: pre-wrap;
       color: #e6edf3;
       background: var(--comment-bg);
-      font-family: Consolas, "Cascadia Code", ui-monospace, monospace;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
       font-size: 0.9rem;
       line-height: 1.55;
     }
@@ -863,7 +870,7 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
       color: var(--button-fg);
       border-radius: 4px;
       padding: 0.4rem 0.8rem;
-      font: 600 0.82rem "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+      font: 600 0.82rem "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
       cursor: pointer;
     }
     button:hover { background: var(--accent-hover); }
@@ -885,7 +892,7 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
       border-radius: 4px;
       padding: 0.05rem 0.4rem;
       font-size: 0.78rem;
-      font-family: Consolas, "Cascadia Code", ui-monospace, monospace;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
     }
     .stance {
       color: var(--muted);
@@ -896,13 +903,30 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
     ul.views { list-style: none; padding-left: 0; }
     ul.views li { margin: 0.35rem 0; }
     .agents { margin-top: 0; }
+    .agents a { color: var(--accent); }
+    .agent-findings-nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      margin: 0.35rem 0 0.85rem;
+      padding: 0 0 8px;
+      border-bottom: 1px solid var(--line);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+    .agent-findings-nav a { color: var(--accent); }
+    ${workspaceChromeCss()}
     .section-title { margin-top: 2rem; }
   </style>
 </head>
-<body>
+<body class="wb-page">
+  ${workspaceChromeOpenHtml({ prNumber: run.prNumber, active: "list" })}
   <main data-pr="${run.prNumber}">
     <h1>PR #${run.prNumber} — Final Review</h1>
     <p class="lede">${escapeHtml(run.title ?? "")}${run.demo ? " · demo mode" : ""}${run.agent ? ` · agent ${escapeHtml(run.agent)}` : ""} · <a href="triage.html">Open triage (one at a time)</a></p>
+    ${agentFindingsNavHtml(run, escapeHtml)}
     ${agentsSummaryHtml(run)}
     ${run.overview ? renderOverviewHtml(run.overview, escapeHtml) : ""}
     <section class="summary">
@@ -931,6 +955,7 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
     <h2 id="resolved-heading" class="section-title" hidden>Resolved</h2>
     <div id="resolved-findings" hidden></div>
   </main>
+  ${workspaceChromeCloseHtml()}
   ${clientScript(run.prNumber)}
 </body>
 </html>`;

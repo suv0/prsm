@@ -5,11 +5,13 @@ import type {
 } from "@review-os/core";
 import { parseFindingsFromModelText } from "./parse-findings.js";
 import {
+  assertPrintModeCliOutput,
   buildCliReviewInstruction,
   commandExists,
   createCliLogBridge,
   execCli,
   writePassPromptFile,
+  type ExecCliOptions,
 } from "./run-cli.js";
 
 export type PromptStyle = "dash-p" | "trailing";
@@ -22,6 +24,22 @@ export type CliAgentSpec = {
   promptStyle: PromptStyle;
   /** Append `--workspace <cwd>` (Cursor Agent). */
   workspaceFlag?: boolean;
+  /** Put extraArgs before `-p` (Command Code treats flags after `-p` unreliably). */
+  extraBeforePrompt?: boolean;
+  /** Pipe the prompt on stdin with bare `-p` (avoids Windows argv quoting). */
+  promptViaStdin?: boolean;
+  /** Override the default 12-minute CLI timeout. */
+  timeoutMs?: number;
+  /** Kill if the CLI stays silent this long (Command Code max-effort hangs). */
+  stallTimeoutMs?: number;
+  /**
+   * stdout is NDJSON event frames (Command Code `--output-format json`).
+   * Only the last `result` frame's `finalText` is kept in memory — see
+   * `createNdjsonCollector` in run-cli.ts — so long thinking runs cannot
+   * exhaust the process output buffer.
+   */
+  ndjsonEvents?: boolean;
+  env?: NodeJS.ProcessEnv;
 };
 
 export const RESERVED_PROVIDER_IDS = new Set([
@@ -45,20 +63,53 @@ export const BUILTIN_CLI_SPECS: CliAgentSpec[] = [
     id: "claude-code",
     name: "Claude Code",
     command: "claude",
+    // Flags before bare `-p`; prompt on stdin — Windows `shell: true` concatenates
+    // argv without escaping (DEP0190), which turned long `-p "…"` into Claude's
+    // interactive greeting ("What would you like to work on?").
     extraArgs: ["--output-format", "text"],
     promptStyle: "dash-p",
+    extraBeforePrompt: true,
+    promptViaStdin: true,
+    env: {
+      CI: "1",
+      NO_COLOR: "1",
+    },
   },
   {
     id: "command-code",
     name: "Command Code",
     command: "command-code",
     extraArgs: [
+      // Headless: trust + dont-ask so a missing TTY cannot sit on a permission prompt.
+      // --effort high is the lowest this CLI accepts for deepseek-v4-pro (only high|max).
+      // Interactive "max" sat silent for 18 minutes with no tool stream.
+      // --no-skills skips repo skills (graphify / review-pr) that spawn extra tools.
+      // Prompt goes on stdin with bare `-p` so Windows cmd.exe cannot truncate `-p "…"`.
+      "--trust",
       "--skip-onboarding",
       "--no-session",
+      "--permission-mode",
+      "dont-ask",
+      "--effort",
+      "high",
+      "--no-skills",
       "--output-format",
-      "text",
+      "json",
+      "--verbose",
+      "--no-auto-update",
+      "--max-turns",
+      "20",
     ],
     promptStyle: "dash-p",
+    extraBeforePrompt: true,
+    promptViaStdin: true,
+    timeoutMs: 12 * 60 * 1000,
+    stallTimeoutMs: 5 * 60 * 1000,
+    ndjsonEvents: true,
+    env: {
+      CI: "1",
+      NO_COLOR: "1",
+    },
   },
 ];
 
@@ -95,6 +146,10 @@ export function buildCliArgs(
   const extra = [...spec.extraArgs];
   if (spec.workspaceFlag) extra.push("--workspace", cwd);
   if (spec.promptStyle === "trailing") return [...extra, instruction];
+  if (spec.promptViaStdin) {
+    return spec.extraBeforePrompt ? [...extra, "-p"] : ["-p", ...extra];
+  }
+  if (spec.extraBeforePrompt) return [...extra, "-p", instruction];
   return ["-p", instruction, ...extra];
 }
 
@@ -115,11 +170,31 @@ export function cliInvocation(
 ): {
   command: string;
   args: (instruction: string, cwd: string) => string[];
+  spec: CliAgentSpec;
 } {
   const spec = resolveCliSpec(providerId, extras);
   return {
     command: spec.command,
     args: (instruction, cwd) => buildCliArgs(spec, instruction, cwd),
+    spec,
+  };
+}
+
+export function execOptionsForSpec(
+  spec: CliAgentSpec,
+  instruction: string,
+): Pick<
+  ExecCliOptions,
+  "stdin" | "timeoutMs" | "stallTimeoutMs" | "env" | "ndjsonEvents"
+> {
+  return {
+    ...(spec.timeoutMs !== undefined ? { timeoutMs: spec.timeoutMs } : {}),
+    ...(spec.stallTimeoutMs !== undefined
+      ? { stallTimeoutMs: spec.stallTimeoutMs }
+      : {}),
+    ...(spec.env ? { env: spec.env } : {}),
+    ...(spec.promptViaStdin ? { stdin: instruction } : {}),
+    ...(spec.ndjsonEvents ? { ndjsonEvents: true } : {}),
   };
 }
 
@@ -147,13 +222,24 @@ export class GenericCliProvider implements Provider {
     request.context.log?.(
       `  · spawning ${this.spec.command} (${promptPath})`,
     );
+    if (this.spec.id === "command-code") {
+      request.context.log?.(
+        "  · command-code unattended: --effort high --no-skills --permission-mode dont-ask (overrides interactive max-effort)",
+      );
+    }
+    if (this.spec.id === "claude-code") {
+      request.context.log?.(
+        "  · claude-code unattended: bare -p with prompt on stdin (Windows-safe)",
+      );
+    }
 
     const result = await execCli(
       this.spec.command,
       buildCliArgs(this.spec, instruction, cwd),
       {
         cwd,
-        timeoutMs: 12 * 60 * 1000,
+        timeoutMs: this.spec.timeoutMs ?? 12 * 60 * 1000,
+        ...execOptionsForSpec(this.spec, instruction),
         ...createCliLogBridge(request.context.log, this.spec.command),
       },
     );
@@ -163,6 +249,8 @@ export class GenericCliProvider implements Provider {
         `${this.id} failed (${result.code}):\n${result.stderr || result.stdout}`,
       );
     }
+
+    assertPrintModeCliOutput(result.stdout, this.spec.command);
 
     const findings = parseFindingsFromModelText(result.stdout, {
       passId: request.passId,

@@ -16,6 +16,8 @@ import {
   cliInvocation,
   createCliLogBridge,
   execCli,
+  execOptionsForSpec,
+  type CliAgentSpec,
 } from "@review-os/providers";
 import type { Finding, ReviewRun } from "@review-os/schemas";
 import { loadCustomAgents } from "./custom-agents.js";
@@ -25,6 +27,7 @@ export type LogFn = (line: string) => void;
 async function cliForProvider(providerId: string): Promise<{
   command: string;
   args: (instruction: string, cwd: string) => string[];
+  spec: CliAgentSpec;
 }> {
   const extras = await loadCustomAgents();
   return cliInvocation(providerId, extras);
@@ -73,10 +76,11 @@ export async function runRecheckFinding(options: {
     "Do not modify repository files.",
   ].join(" ");
 
-  const { command, args } = await cliForProvider(providerId);
+  const { command, args, spec } = await cliForProvider(providerId);
   const result = await execCli(command, args(instruction, repoRoot), {
     cwd: repoRoot,
     timeoutMs: 10 * 60 * 1000,
+    ...execOptionsForSpec(spec, instruction),
     ...createCliLogBridge(log, command),
   });
   if (result.code !== 0) {

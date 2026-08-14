@@ -19,7 +19,9 @@ import {
   cliInvocation,
   detectDefaultCliProvider,
   execCli,
+  execOptionsForSpec,
   listAvailableProviders,
+  type CliAgentSpec,
 } from "@review-os/providers";
 import { renderReviewFromDir, renderVerifyReportHtml } from "@review-os/render";
 import {
@@ -45,6 +47,7 @@ async function loadRun(outputDir: string) {
 async function cliForProvider(providerId: string): Promise<{
   command: string;
   args: (instruction: string, cwd: string) => string[];
+  spec: CliAgentSpec;
 }> {
   const { extraSpecs } = await createLiveRegistry();
   return cliInvocation(providerId, extraSpecs);
@@ -69,10 +72,11 @@ async function runVerifyPrompt(options: {
     "Return ONLY a JSON array of status/summary objects (one per findingId).",
     "Do not modify repository files.",
   ].join(" ");
-  const { command, args } = await cliForProvider(options.providerId);
+  const { command, args, spec } = await cliForProvider(options.providerId);
   const result = await execCli(command, args(instruction, options.repoRoot), {
     cwd: options.repoRoot,
     timeoutMs: 12 * 60 * 1000,
+    ...execOptionsForSpec(spec, instruction),
     ...createCliLogBridge(options.log, command),
   });
   if (result.code !== 0) {

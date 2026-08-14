@@ -1,4 +1,5 @@
 import { FindingSchema, type Finding } from "@review-os/schemas";
+import { stripHeadlessCliBanners } from "./run-cli.js";
 
 /** Remove trailing commas that models often leave before } or ]. */
 function stripTrailingCommas(jsonText: string): string {
@@ -162,7 +163,7 @@ export function parseFindingsFromModelText(
   text: string,
   options: { passId: string; provider: string },
 ): Finding[] {
-  const raw = extractJsonArray(text);
+  const raw = extractJsonArray(stripHeadlessCliBanners(text));
   if (!Array.isArray(raw)) {
     throw new Error("Findings JSON must be an array");
   }
@@ -188,6 +189,13 @@ export function parseFindingsFromModelText(
       continue;
     }
     findings.push(parsed.data);
+  }
+
+  if (findings.length === 0 && raw.length > 0) {
+    const preview = text.slice(0, 180).replace(/\s+/g, " ");
+    throw new Error(
+      `CLI returned JSON that is not findings (${raw.length} object(s)): ${preview}…`,
+    );
   }
 
   return findings;

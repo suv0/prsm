@@ -1,7 +1,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PrOverviewSchema, type PrOverview } from "@review-os/schemas";
-import { cliInvocation, type CliAgentSpec } from "./cli-agents.js";
+import {
+  cliInvocation,
+  execOptionsForSpec,
+  type CliAgentSpec,
+} from "./cli-agents.js";
 import { createCliLogBridge, execCli } from "./run-cli.js";
 
 const MAX_DIFF_CHARS = 60_000;
@@ -99,10 +103,6 @@ export async function generatePrOverview(options: {
   extraCliSpecs?: CliAgentSpec[];
 }): Promise<PrOverview> {
   const log = options.log ?? (() => undefined);
-  const { command, args } = cliInvocation(
-    options.providerId,
-    options.extraCliSpecs ?? [],
-  );
   const agentDir = path.join(options.outputDir, "agent");
   await mkdir(agentDir, { recursive: true });
   const promptPath = path.join(agentDir, "overview.prompt.txt");
@@ -120,17 +120,21 @@ export async function generatePrOverview(options: {
     "utf8",
   );
 
+  log(`▶ overview via ${options.providerId}…`);
+  const startedAt = Date.now();
+  const { command, args, spec } = cliInvocation(
+    options.providerId,
+    options.extraCliSpecs ?? [],
+  );
   const instruction = [
     "You write PR overviews for human reviewers.",
     `Read this prompt and follow it exactly: ${promptPath}`,
     "Return ONLY a JSON object with keys summary, whatChanged, mainRisks, testFocus.",
     "Do not modify repository files.",
   ].join(" ");
-
-  log(`▶ overview via ${options.providerId}…`);
-  const startedAt = Date.now();
   const result = await execCli(command, args(instruction, options.repoRoot), {
     cwd: options.repoRoot,
+    ...execOptionsForSpec(spec, instruction),
     timeoutMs: 8 * 60 * 1000,
     ...createCliLogBridge(log, command),
   });

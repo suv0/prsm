@@ -5,8 +5,11 @@ import path from "node:path";
 import test from "node:test";
 import {
   assertSafeCliCommand,
+  BUILTIN_CLI_SPECS,
   buildCliArgs,
+  execOptionsForSpec,
   RESERVED_PROVIDER_IDS,
+  resolveCliSpec,
   slugAgentId,
 } from "../packages/providers/dist/cli-agents.js";
 import {
@@ -74,6 +77,54 @@ test("buildCliArgs dash-p vs trailing vs workspace", () => {
     ),
     ["-p", "do the review", "--trust", "--workspace", "/repo"],
   );
+});
+
+test("command-code extra args skip trust and write-permission prompts", () => {
+  const spec = BUILTIN_CLI_SPECS.find((entry) => entry.id === "command-code");
+  assert.ok(spec);
+  const args = buildCliArgs(spec, "do the review", "/repo");
+  assert.ok(args.includes("--trust"));
+  assert.ok(args.includes("--skip-onboarding"));
+  assert.ok(args.includes("--no-session"));
+  assert.ok(args.includes("--verbose"));
+  assert.ok(args.includes("--no-auto-update"));
+  assert.ok(args.includes("--no-skills"));
+  assert.equal(args[args.indexOf("--effort") + 1], "high");
+  assert.equal(args[args.indexOf("--output-format") + 1], "json");
+  const perm = args.indexOf("--permission-mode");
+  assert.ok(perm >= 0);
+  assert.equal(args[perm + 1], "dont-ask");
+  const turns = args.indexOf("--max-turns");
+  assert.ok(turns >= 0);
+  assert.equal(args[turns + 1], "20");
+  assert.equal(args[args.length - 1], "-p");
+  assert.equal(spec.promptViaStdin, true);
+  assert.equal(spec.stallTimeoutMs, 5 * 60 * 1000);
+  assert.equal(spec.ndjsonEvents, true);
+});
+
+test("command-code exec options request bounded NDJSON collection", () => {
+  const spec = resolveCliSpec("command-code");
+  const execOptions = execOptionsForSpec(spec, "do the review");
+  assert.equal(execOptions.ndjsonEvents, true);
+  assert.equal(execOptions.stdin, "do the review");
+});
+
+test("claude-code pipes prompt on stdin with flags before bare -p", () => {
+  const spec = resolveCliSpec("claude-code");
+  assert.equal(spec.promptViaStdin, true);
+  assert.equal(spec.extraBeforePrompt, true);
+  const args = buildCliArgs(spec, "do the review", "/repo");
+  assert.deepEqual(args, ["--output-format", "text", "-p"]);
+  assert.equal(execOptionsForSpec(spec, "do the review").stdin, "do the review");
+});
+
+test("other built-ins do not opt into NDJSON collection", () => {
+  for (const id of ["cursor", "claude-code"]) {
+    const spec = resolveCliSpec(id);
+    assert.equal(spec.ndjsonEvents, undefined);
+    assert.equal(execOptionsForSpec(spec, "x").ndjsonEvents, undefined);
+  }
 });
 
 test("addCustomAgent persists under PRSM_HOME and rejects reserved names", async () => {

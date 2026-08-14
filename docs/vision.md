@@ -17,7 +17,7 @@ pnpm install
 pnpm prsm
 ```
 
-Hub at http://127.0.0.1:8788/ — Connect GitHub, add an agent, paste a PR URL.
+Hub at http://127.0.0.1:8788/ — Settings (GitHub + agents), New review, Live run, then triage.
 
 Or from chat in this repo:
 

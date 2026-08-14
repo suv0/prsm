@@ -65,6 +65,24 @@ export interface RunPipelineOptions {
   parallelPasses?: boolean;
 }
 
+function compactPassError(message: string | undefined): string {
+  if (!message?.trim()) return "";
+  const one = message.replace(/\s+/g, " ").trim();
+  return one.length > 220 ? `${one.slice(0, 220)}…` : one;
+}
+
+function allPassesFailedMessage(
+  abortedForProviderLimit: boolean,
+  details: string[],
+): string {
+  const tail = " Remaining agents will still run.";
+  const hint = compactPassError(details[0]);
+  if (abortedForProviderLimit) {
+    return `All specialist passes failed for this agent (credit/quota/auth)${hint ? `: ${hint}` : ""}.${tail}`;
+  }
+  return `All specialist passes failed for this agent${hint ? `: ${hint}` : " (no findings)"}.${tail}`;
+}
+
 function countFindings(findings: Finding[]): JudgeResult["counts"] {
   const counts = {
     blocker: 0,
@@ -234,6 +252,7 @@ export async function runPipeline(
 
   const passResults: Awaited<ReturnType<Pass["run"]>>[] = [];
   const failedPasses: string[] = [];
+  const failedPassDetails: string[] = [];
   let abortedForProviderLimit = false;
   const runParallel =
     parallelPasses && selectedPasses.length > 1 && !loadOnly && !demo;
@@ -277,6 +296,7 @@ export async function runPipeline(
         continue;
       }
       failedPasses.push(item.passId);
+      failedPassDetails.push(item.detail);
       passResults.push({
         passId: item.passId,
         provider: item.providerId,
@@ -322,6 +342,7 @@ export async function runPipeline(
         const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
         const detail = error instanceof Error ? error.message : String(error);
         failedPasses.push(pass.id);
+        failedPassDetails.push(detail);
         log(`✗ pass ${pass.id} failed after ${seconds}s — ${detail}`);
         passResults.push({
           passId: pass.id,
@@ -403,9 +424,7 @@ export async function runPipeline(
     findings.length === 0
   ) {
     throw new Error(
-      abortedForProviderLimit
-        ? `All specialist passes failed for this agent (credit/quota/auth). Remaining agents will still run.`
-        : `All specialist passes failed for this agent (no findings). Remaining agents will still run.`,
+      allPassesFailedMessage(abortedForProviderLimit, failedPassDetails),
     );
   }
 

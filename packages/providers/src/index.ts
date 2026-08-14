@@ -18,6 +18,7 @@ export {
   buildCliArgs,
   resolveCliSpec,
   cliInvocation,
+  execOptionsForSpec,
 } from "./cli-agents.js";
 export type { CliAgentSpec, PromptStyle } from "./cli-agents.js";
 export { parseFindingsFromModelText } from "./parse-findings.js";
@@ -28,6 +29,10 @@ export {
   formatCliLogLine,
   commandExists,
   execCli,
+  quoteWinShellArgs,
+  assertPrintModeCliOutput,
+  stripHeadlessCliBanners,
+  extractHeadlessJsonFinalText,
 } from "./run-cli.js";
 export {
   generatePrOverview,

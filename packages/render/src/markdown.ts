@@ -139,10 +139,10 @@ export function renderFinalReviewMarkdown(run: ReviewRun): string {
     lines.push(
       "## Agent runs (merged)",
       "",
-      ...run.agents.map(
-        (agent) =>
-          `- \`${agent.agent}\` · ${agent.findingCount} finding(s) · \`${agent.id}\` · ${agent.createdAt}`,
-      ),
+      ...run.agents.map((agent) => {
+        const href = `runs/${agent.id}/triage.html`;
+        return `- [\`${agent.agent}\`](${href}) · ${agent.findingCount} finding(s) · \`${agent.id}\``;
+      }),
       "",
       "_Same issue from multiple agents is shown once below, with each agent's wording under **Agent perspectives**._",
       "",

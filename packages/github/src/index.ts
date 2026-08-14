@@ -22,4 +22,5 @@ export {
   GithubApiError,
   explainGithubApiError,
   parseGithubNextLink,
+  githubGetJson,
 } from "./api.js";

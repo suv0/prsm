@@ -55,9 +55,9 @@ pnpm prsm
 
 That last command installs/builds if needed, starts the hub, and opens **http://127.0.0.1:8788/**
 
-1. **Connect GitHub** — skip for public PRs; paste a token for private repos  
-2. **Connect agents** — Re-check a built-in, or **Add your own agent**  
-3. Paste a GitHub PR URL → tick agents → **Run review**
+1. **Settings** — **GitHub access** (skip for public PRs; paste a token for private repos) and **AI agents** (Re-check a built-in, or **Add your own agent**)  
+2. **New Review** — paste a GitHub PR URL → pick agents → edit **Review instructions** if you want → **Run Review** (the job loads the PR when it starts; private repos need Settings → Connect GitHub)  
+3. Watch **Live run**, then **Home** → **Triage**
 
 Install **any one** agent (you do not need all three):
 
@@ -110,8 +110,8 @@ The hub (`pnpm prsm`, or `--serve-ui` / `--serve`) is the main UI:
 
 | Page | What |
 |---|---|
-| `http://127.0.0.1:8788/` | Your reviews, **Connect GitHub**, **Connect agents** / **Add your own agent**, start a run |
-| `http://127.0.0.1:8788/pr/<n>/` | One-finding-at-a-time triage |
+| `http://127.0.0.1:8788/` | Workbench: **Home** (review table), **New Review** wizard, **Live run**, **Settings** (GitHub + agents). Top tabs: Live run / Triage / List / Verify for the selected PR. |
+| `http://127.0.0.1:8788/pr/<n>/` | One-finding-at-a-time triage (same sidebar + workspace tabs as the hub). List and Verify keep that chrome; Verify shows an empty state until you run author-update verify. |
 
 On a finding you can:
 
@@ -121,7 +121,7 @@ On a finding you can:
 
 Pick the agent in the dropdown (same CLIs as the review). One agent per Teach me / Recheck.
 
-**Add your own agent** (hub home): name + command on PATH. PRism stores it in `~/.prsm/custom-agents.json` (this machine only). Tick it like the built-ins once it shows Detected.
+**Add your own agent** (hub **Settings**): name + command on PATH. PRism stores it in `~/.prsm/custom-agents.json` (this machine only). Tick it like the built-ins once it shows Detected.
 
 Disk-only refresh (no model): `pnpm prsm --render <n>`.
 
@@ -207,14 +207,17 @@ reviews/<n>/
 
 | Symptom | What to try |
 |---|---|
-| Clone runs but **Run review** is disabled | Install + log into any one agent, **or Add your own agent**; hub → **Connect agents** → Re-check |
+| Clone runs but **Run review** is disabled | Install + log into any one agent, **or Add your own agent**; hub → **Settings** → Re-check |
 | Private PR 404 / GitHub errors | Hub → **Connect GitHub** (paste a `repo` token), or `gh auth login` |
 | Provider missing | Install CLI; `pnpm prsm --doctor` / `--list-providers` |
-| Claude “no stdin data received in 3s” | Upgrade to this PRism version (stdin is closed; prompts go via `-p`) |
+| Claude “What would you like to work on?” / parse findings JSON fails | Windows was mangling long `-p "…"` prompts under `shell: true`. PRism now pipes the Claude prompt on stdin (bare `-p`) and quotes argv for other CLIs. Restart the hub after upgrading. |
+| Claude “no stdin data received in 3s” | Only happens if stdin is a pipe with no data. PRism either ignores stdin or writes the full prompt then closes it. Restart the hub after upgrading. |
 | Cursor `Error: [unavailable]` | Transient Cursor API; re-run that agent, or rely on others |
 | JSON / Teach me looks like raw JSON | Recheck again on current PRism (lesson is recovered from dumps) |
 | “Already running” | Attach to that job, or **Force stop** then restart |
 | Empty log for minutes | Heartbeats ~20s; per-agent bars show which pass is in flight |
+| Command Code hangs, then times out with no CLI output | Not GitHub permissions. Print mode starts (`session: …`) then the model never streams — often **max** effort on DeepSeek (this model only allows `high` or `max`). PRism now forces `--effort high --no-skills --permission-mode dont-ask`, pipes the prompt on stdin, and kills a silent stall after 5 minutes so the next pass is not blocked for 18 minutes. Confirm login with `command-code --version` (not `--help`). Restart the hub after this upgrade. |
+| Command Code fails with “output exceeded … bytes” | Fixed: PRism no longer buffers Command Code's full `--output-format json` event stream. Thinking/text-delta and end-of-run history frames are dropped after being logged; only the last result is kept. Restart the hub to pick up this fix. |
 
 ---
 

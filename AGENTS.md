@@ -10,7 +10,7 @@ pnpm install
 pnpm prsm
 ```
 
-Open http://127.0.0.1:8788/ → **Connect GitHub** (public PRs skip this) → **Connect agents** or **Add your own agent** → paste a PR URL. AI CLIs are not vendored in this repo.
+Open http://127.0.0.1:8788/ → **Settings** (Connect GitHub; public PRs skip this) → agents or **Add your own agent** → **New Review** with a PR URL. AI CLIs are not vendored in this repo.
 
 ## Chat command
 
@@ -24,7 +24,7 @@ Follow `.cursor/skills/review-pr/SKILL.md`.
 
 Hands-off CLI: `pnpm prsm --run <url>` (available agents in parallel).
 
-Triage lives at `http://127.0.0.1:8788/pr/<n>/` (Teach me, Recheck, Verify). Disk refresh: `pnpm prsm --render <n>`.
+Triage lives at `http://127.0.0.1:8788/pr/<n>/` (merged). Each agent’s own findings: hub card **This agent’s findings**, or `/pr/<n>/runs/<id>/`. Disk refresh: `pnpm prsm --render <n>`.
 
 No PRism API key for the default path. Never auto-post to GitHub.
 

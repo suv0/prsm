@@ -18,7 +18,7 @@ follow `.cursor/skills/review-pr/SKILL.md` exactly.
 pnpm prsm
 ```
 
-http://127.0.0.1:8788/ — Connect GitHub, Connect agents (or Add your own), run the PR, then triage at `/pr/<n>/`.
+http://127.0.0.1:8788/ — Settings (Connect GitHub, agents / Add your own), New Review, Live run, then triage at `/pr/<n>/`. Each agent’s own findings: `/pr/<n>/runs/<id>/`.
 
 Hands-off CLI: `pnpm prsm --provider claude-code <url>` or `pnpm prsm --run <url>`.
 

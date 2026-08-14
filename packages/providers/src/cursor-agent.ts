@@ -5,12 +5,14 @@ import type {
 } from "@review-os/core";
 import { parseFindingsFromModelText } from "./parse-findings.js";
 import {
+  assertPrintModeCliOutput,
   buildCliReviewInstruction,
   commandExists,
   createCliLogBridge,
   execCli,
   writePassPromptFile,
 } from "./run-cli.js";
+import { buildCliArgs, execOptionsForSpec, resolveCliSpec } from "./cli-agents.js";
 
 /**
  * Cursor Agent CLI (`agent -p`), not the IDE chat skill path.
@@ -32,24 +34,16 @@ export class CursorAgentProvider implements Provider {
     const promptPath = await writePassPromptFile(request, outputDir);
     const instruction = buildCliReviewInstruction(promptPath);
     const cwd = request.context.repoRoot ?? process.cwd();
+    const spec = resolveCliSpec("cursor");
     request.context.log?.(`  · spawning agent -p (prompt ${promptPath})`);
 
     const result = await execCli(
       "agent",
-      [
-        "-p",
-        instruction,
-        "--output-format",
-        "text",
-        "--mode",
-        "ask",
-        "--trust",
-        "--workspace",
-        cwd,
-      ],
+      buildCliArgs(spec, instruction, cwd),
       {
         cwd,
         timeoutMs: 12 * 60 * 1000,
+        ...execOptionsForSpec(spec, instruction),
         ...createCliLogBridge(request.context.log, "agent"),
       },
     );
@@ -59,6 +53,8 @@ export class CursorAgentProvider implements Provider {
         `cursor agent failed (${result.code}):\n${result.stderr || result.stdout}`,
       );
     }
+
+    assertPrintModeCliOutput(result.stdout, "agent");
 
     const findings = parseFindingsFromModelText(result.stdout, {
       passId: request.passId,

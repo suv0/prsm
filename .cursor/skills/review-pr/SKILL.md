@@ -31,7 +31,7 @@ pnpm prsm
 
 Open http://127.0.0.1:8788/ → paste the PR URL → Run review (available agents in **parallel**; specialist passes also parallel).
 
-When the first agent finishes, triage at `/pr/<n>/` is already usable. Later agents merge onto the same cards.
+When the first agent finishes, triage at `/pr/<n>/` is already usable. Later agents merge onto the same cards. Each agent’s own snapshot: `/pr/<n>/runs/<id>/`.
 
 **CLI prepare only:**
 
@@ -106,7 +106,7 @@ Tell the user to open triage via:
 pnpm prsm
 ```
 
-→ `http://127.0.0.1:8788/pr/<n>/` (hub home lists every local review). Recheck / Teach me need the hub. Static `reviews/<n>/triage.html` is view-only. Do **not** post comments to GitHub.
+→ `http://127.0.0.1:8788/pr/<n>/` (hub **Home** lists every local review). Recheck / Teach me need the hub. Static `reviews/<n>/triage.html` is view-only. Do **not** post comments to GitHub.
 
 ## Triage Recheck (live, one finding)
 

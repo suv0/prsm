@@ -11,9 +11,11 @@ import {
   clearGithubToken,
   fetchUserLogin,
   probeGithubAccess,
+  resolveGithubToken,
   saveGithubToken,
 } from "@review-os/github";
-import { renderReviewFromDir } from "@review-os/render";
+import { readFile, access } from "node:fs/promises";
+import { renderReviewFromDir, renderVerifyPlaceholderHtml } from "@review-os/render";
 import {
   DEFAULT_MULTI_AGENTS,
   runAllCliAgents,
@@ -183,61 +185,252 @@ function homePage(port: number): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>PRism — Start review</title>
+  <title>PRism</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
   <style>
     :root {
-      --bg: #1e1e1e;
-      --card: #252526;
-      --line: #3c3c3c;
-      --ink: #d4d4d4;
-      --muted: #a0a0a0;
-      --accent: #3794ff;
-      --accent-hover: #4aa0ff;
-      --ok: #3d7a45;
-      --bad: #f14c4c;
-      --warn: #dcdcaa;
+      --bg: #121414;
+      --surface: #1a1c1c;
+      --card: #1e2020;
+      --raised: #282a2b;
+      --inset: #0d0e0f;
+      --line: #3e4850;
+      --ink: #e2e2e2;
+      --muted: #bec8d1;
+      --accent: #4fc1ff;
+      --accent-hover: #84cfff;
+      --on-primary: #00344c;
+      --ok: #89d185;
+      --bad: #ffb4ab;
+      --warn: #ffc7a2;
+      --cursor: #4fc1ff;
+      --claude: #e9a97d;
+      --command: #cda7ff;
+      --sidebar: 260px;
+      --radius: 4px;
     }
     * { box-sizing: border-box; }
+    html, body { height: 100%; overflow: hidden; color-scheme: dark; }
+    .app { height: 100%; min-height: 0; }
     body {
       margin: 0;
-      font-family: "Segoe UI", Consolas, ui-sans-serif, system-ui, sans-serif;
+      font-family: "Hanken Grotesk", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+      font-size: 13px;
+      line-height: 20px;
       background: var(--bg);
       color: var(--ink);
-      line-height: 1.5;
     }
-    main { max-width: 760px; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
-    h1 { margin: 0 0 0.35rem; font-size: 1.7rem; color: #fff; font-weight: 600; }
-    .lede { color: var(--muted); margin: 0 0 1.5rem; }
+    .app {
+      display: grid;
+      grid-template-columns: var(--sidebar) 1fr;
+      min-height: 100%;
+    }
+    .sidebar {
+      background: var(--surface);
+      border-right: 1px solid var(--line);
+      padding: 12px 0 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .brand-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 4px 16px 16px;
+    }
+    .logo-mark {
+      width: 28px;
+      height: 28px;
+      border-radius: 4px;
+      background: var(--accent);
+      color: var(--on-primary);
+      font: 700 14px/28px "Hanken Grotesk", sans-serif;
+      text-align: center;
+      flex-shrink: 0;
+    }
+    .brand { font-size: 16px; font-weight: 600; line-height: 20px; color: #fff; }
+    .brand-sub {
+      margin: 0;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: 0;
+      border-radius: 0;
+      border-left: 2px solid transparent;
+      color: var(--ink);
+      padding: 8px 16px;
+      font: 600 13px/20px "Hanken Grotesk", sans-serif;
+      cursor: pointer;
+    }
+    .nav-item:hover { background: var(--raised); }
+    .nav-item.is-active {
+      background: var(--raised);
+      border-left-color: var(--accent);
+      color: #fff;
+    }
+    .nav-ico { width: 16px; opacity: 0.8; }
+    .sidebar-foot {
+      margin-top: auto;
+      border-top: 1px solid var(--line);
+    }
+    .stage {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      background-color: var(--bg);
+      background-image: radial-gradient(rgba(255,255,255,0.045) 1px, transparent 1px);
+      background-size: 14px 14px;
+    }
+    .topbar {
+      min-height: 40px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 16px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--line);
+      flex-shrink: 0;
+      position: sticky;
+      top: 0;
+      z-index: 20;
+    }
+    .ws-title {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 600;
+      color: #fff;
+      white-space: nowrap;
+    }
+    .ws-tabs {
+      display: flex;
+      gap: 2px;
+      margin: 0 auto;
+    }
+    .ws-tabs a, .ws-tabs button {
+      background: transparent;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      color: var(--muted);
+      padding: 10px 12px;
+      font: 600 13px/16px "Hanken Grotesk", sans-serif;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .ws-tabs a:hover, .ws-tabs button:hover { color: #fff; background: transparent; }
+    .ws-tabs a.is-active, .ws-tabs button.is-active {
+      color: #fff;
+      border-bottom-color: var(--accent);
+    }
+    .ws-tabs a.is-off { opacity: 0.45; pointer-events: none; }
+    .ws-utils { display: flex; align-items: center; gap: 8px; }
+    .stage-body {
+      flex: 1;
+      overflow: auto;
+      padding: 20px 24px 28px;
+    }
+    .view { max-width: 1080px; }
+    .display {
+      margin: 0 0 4px;
+      font: 600 18px/24px "Hanken Grotesk", sans-serif;
+      color: #fff;
+    }
+    .statusbar {
+      height: 22px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 12px;
+      font: 11px/16px "JetBrains Mono", ui-monospace, monospace;
+      background: var(--accent);
+      color: var(--on-primary);
+    }
+    .statusbar span { white-space: nowrap; }
+    .lede { color: var(--muted); margin: 0 0 12px; font-size: 13px; }
     .card {
       background: var(--card);
       border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 1.15rem 1.25rem;
-      margin-bottom: 1rem;
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      margin-bottom: 12px;
     }
-    label { display: block; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; margin-bottom: 0.4rem; }
-    input[type="url"], input[type="text"] {
+    .section-label {
+      margin: 0 0 8px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.02em; color: var(--muted); font-weight: 600; margin-bottom: 4px; }
+    input[type="url"], input[type="text"], input[type="password"],
+    textarea, select {
       width: 100%;
-      background: #1e1e1e;
+      background: var(--inset);
       border: 1px solid var(--line);
-      border-radius: 6px;
+      border-radius: var(--radius);
       color: var(--ink);
-      padding: 0.7rem 0.8rem;
-      font: 0.95rem Consolas, "Cascadia Code", ui-monospace, monospace;
+      padding: 8px 10px;
+      font: 13px/20px "Hanken Grotesk", sans-serif;
+      color-scheme: dark;
+      accent-color: var(--accent);
     }
-    input:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+    input[type="url"], input[type="text"], input[type="password"],
+    textarea#extra-instructions {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+    }
+    select {
+      width: auto;
+      min-width: 9rem;
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image:
+        linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+        linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+      background-position:
+        calc(100% - 14px) calc(50% - 2px),
+        calc(100% - 9px) calc(50% - 2px);
+      background-size: 5px 5px, 5px 5px;
+      background-repeat: no-repeat;
+      padding-right: 28px;
+    }
+    option, optgroup {
+      background: var(--inset);
+      color: var(--ink);
+    }
+    input:focus, textarea:focus, select:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
     textarea#extra-instructions {
       width: 100%;
-      min-height: 11rem;
+      min-height: 8rem;
       resize: vertical;
-      background: #1e1e1e;
+      background: var(--inset);
       border: 1px solid var(--line);
-      border-radius: 6px;
+      border-radius: var(--radius);
       color: var(--ink);
-      padding: 0.7rem 0.8rem;
-      font: 0.9rem/1.45 Consolas, "Cascadia Code", ui-monospace, monospace;
+      padding: 8px 10px;
+      font: 13px/20px "JetBrains Mono", ui-monospace, monospace;
     }
-    textarea#extra-instructions:disabled { opacity: 0.65; cursor: not-allowed; }
     .instr-toolbar {
       display: flex;
       flex-wrap: wrap;
@@ -248,10 +441,10 @@ function homePage(port: number): string {
     .agents label { display: inline-flex; align-items: center; gap: 0.4rem; text-transform: none; letter-spacing: 0; font-size: 0.92rem; color: var(--ink); font-weight: 500; cursor: pointer; margin: 0; }
     .rule-toggles {
       margin: 0.85rem 0 0.35rem;
-      padding: 0.75rem 0.85rem;
+      padding: 12px;
       border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #1b2838;
+      border-radius: var(--radius);
+      background: var(--inset);
     }
     .rule-toggles label {
       display: flex;
@@ -270,15 +463,28 @@ function homePage(port: number): string {
     button {
       border: 1px solid transparent;
       background: var(--accent);
-      color: #fff;
-      border-radius: 4px;
-      padding: 0.55rem 1rem;
-      font: 600 0.9rem "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+      color: var(--on-primary);
+      border-radius: var(--radius);
+      padding: 6px 12px;
+      font: 600 13px/20px "Hanken Grotesk", sans-serif;
       cursor: pointer;
     }
     button:hover { background: var(--accent-hover); }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
-    .hint { color: var(--muted); font-size: 0.88rem; margin-top: 0.75rem; }
+    button.nav-item {
+      background: transparent;
+      color: var(--ink);
+      border: 0;
+      border-left: 2px solid transparent;
+      border-radius: 0;
+    }
+    button.nav-item:hover { background: var(--raised); }
+    button.nav-item.is-active {
+      background: var(--raised);
+      border-left-color: var(--accent);
+      color: #fff;
+    }
+    .hint { color: var(--muted); font-size: 12px; line-height: 18px; margin-top: 8px; }
     #status { font-weight: 600; margin-bottom: 0.5rem; }
     #status.running { color: var(--warn); }
     #status.done { color: #9cdcfe; }
@@ -296,27 +502,27 @@ function homePage(port: number): string {
     }
     .progress-track {
       border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 0.55rem 0.7rem 0.65rem;
-      background: #1e1e1e;
+      border-radius: var(--radius);
+      padding: 8px 12px;
+      background: var(--surface);
       cursor: pointer;
-      border-left: 4px solid #6e6e6e;
+      border-left: 2px solid #6e6e6e;
     }
-    .progress-track:hover { border-color: #555; }
+    .progress-track:hover { background: var(--raised); }
     .progress-track.is-filter {
-      outline: 1px solid var(--accent);
-      background: #1a2430;
+      background: var(--raised);
+      border-left-width: 2px;
     }
-    .progress-track.ag-cursor { border-left-color: #4fc1ff; }
-    .progress-track.ag-claude { border-left-color: #e8a87c; }
-    .progress-track.ag-command { border-left-color: #c9a0ff; }
-    .progress-track.ag-other { border-left-color: #89d185; }
+    .progress-track.ag-cursor { border-left-color: var(--cursor); }
+    .progress-track.ag-claude { border-left-color: var(--claude); }
+    .progress-track.ag-command { border-left-color: var(--command); }
+    .progress-track.ag-other { border-left-color: var(--ok); }
     .progress-top {
       display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
       gap: 0.35rem 0.75rem; margin-bottom: 0.35rem;
     }
     .progress-name { font-weight: 650; color: #fff; font-size: 0.92rem; }
-    .progress-meta { color: var(--muted); font-size: 0.78rem; font-family: Consolas, "Cascadia Code", ui-monospace, monospace; }
+    .progress-meta { color: var(--muted); font-size: 0.78rem; font-family: "JetBrains Mono", ui-monospace, monospace; }
     .bar {
       height: 8px;
       background: #2a2a2a;
@@ -332,9 +538,9 @@ function homePage(port: number): string {
       background: #6e6e6e;
       transition: width 0.35s ease;
     }
-    .progress-track.ag-cursor .bar > span { background: #4fc1ff; }
-    .progress-track.ag-claude .bar > span { background: #e8a87c; }
-    .progress-track.ag-command .bar > span { background: #c9a0ff; }
+    .progress-track.ag-cursor .bar > span { background: var(--cursor); }
+    .progress-track.ag-claude .bar > span { background: var(--claude); }
+    .progress-track.ag-command .bar > span { background: var(--command); }
     .progress-track.ag-other .bar > span { background: #89d185; }
     .progress-track.is-done .bar > span { background: #3d7a45; }
     .progress-track.is-error .bar > span { background: var(--bad); }
@@ -355,15 +561,17 @@ function homePage(port: number): string {
     .pass-chip.done { color: #89d185; border-color: #3d7a45; background: #1f2a1f; }
     .pass-chip.error { color: #f14c4c; border-color: #8b2e2e; background: #2a1818; }
     .progress-label { margin: 0.35rem 0 0; font-size: 0.8rem; color: var(--muted); }
+    .progress-links { margin: 0.35rem 0 0; font-size: 0.8rem; }
+    .progress-links a { color: var(--accent); }
     .logs {
-      margin: 0.5rem 0 0;
+      margin: 8px 0 0;
       max-height: 22rem;
       overflow: auto;
-      background: #141414;
+      background: #0d0e0f;
       border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 0.55rem 0.7rem;
-      font: 0.82rem/1.45 Consolas, "Cascadia Code", ui-monospace, monospace;
+      border-radius: var(--radius);
+      padding: 8px 10px;
+      font: 12px/18px "JetBrains Mono", ui-monospace, monospace;
     }
     .log-line { white-space: pre-wrap; word-break: break-word; color: #9a9a9a; }
     .log-time { color: #6a6a6a; }
@@ -386,7 +594,7 @@ function homePage(port: number): string {
       color: var(--muted);
       font-size: 0.88rem;
       margin: 0.35rem 0 0.75rem;
-      font-family: Consolas, "Cascadia Code", ui-monospace, monospace;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
       word-break: break-all;
     }
     .job-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.5rem 0 0.75rem; }
@@ -397,17 +605,18 @@ function homePage(port: number): string {
     }
     button.danger:hover { background: #6e2424; }
     button.btn-secondary {
-      background: #2d2d2d;
+      background: transparent;
       border-color: var(--line);
-      color: #d4d4d4;
+      color: var(--ink);
     }
-    button.btn-secondary:hover { background: #3a3a3a; }
+    button.btn-secondary:hover { background: var(--raised); }
     #providers { color: var(--muted); font-size: 0.88rem; margin-bottom: 1rem; }
     .connect-head {
       display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
       gap: 0.75rem; margin-bottom: 0.85rem;
     }
-    .connect-head h2 { margin: 0; font-size: 1.05rem; color: #fff; font-weight: 600; }
+    .view[hidden] { display: none !important; }
+    .connect-head h2 { margin: 0; font-size: 13px; color: #fff; font-weight: 600; }
     .pill {
       display: inline-block; font-size: 0.75rem; font-weight: 600;
       padding: 0.15rem 0.5rem; border-radius: 999px; border: 1px solid var(--line);
@@ -418,14 +627,14 @@ function homePage(port: number): string {
     .agent-grid { display: grid; gap: 0.75rem; }
     @media (min-width: 640px) { .agent-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); } }
     .agent-card {
-      border: 1px solid var(--line); border-radius: 8px; padding: 0.85rem 0.9rem;
-      background: #1e1e1e; display: flex; flex-direction: column; gap: 0.45rem;
+      border: 1px solid var(--line); border-radius: var(--radius); padding: 0.85rem 0.9rem;
+      background: var(--card); display: flex; flex-direction: column; gap: 0.45rem;
     }
     .agent-card.ready { border-color: #3d7a45; }
     .agent-card h3 { margin: 0; font-size: 0.95rem; color: #fff; }
     .agent-card p { margin: 0; font-size: 0.82rem; color: var(--muted); }
     .agent-card .cmd {
-      font: 0.78rem Consolas, "Cascadia Code", ui-monospace, monospace;
+      font: 0.78rem "JetBrains Mono", ui-monospace, monospace;
       color: #9cdcfe;
     }
     .agent-card ol { margin: 0.25rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.78rem; }
@@ -442,8 +651,8 @@ function homePage(port: number): string {
       border-radius: 4px; padding: 0.25rem 0.5rem;
     }
     .add-agent {
-      margin: 0.9rem 0 0; border: 1px dashed var(--line); border-radius: 8px;
-      padding: 0.65rem 0.85rem; background: #1e1e1e;
+      margin: 0.9rem 0 0; border: 1px dashed var(--line); border-radius: var(--radius);
+      padding: 0.65rem 0.85rem; background: var(--card);
     }
     .add-agent summary {
       cursor: pointer; color: #fff; font-weight: 600; font-size: 0.92rem;
@@ -457,12 +666,16 @@ function homePage(port: number): string {
     }
     .add-agent label { margin: 0; }
     .add-agent input[type="text"] { width: 100%; }
-    .add-agent .check { display: flex; align-items: center; gap: 0.45rem; font-size: 0.85rem; color: var(--ink); }
+    .add-agent .field-hint {
+      margin: 0.3rem 0 0; color: var(--muted); font-size: 0.8rem; font-weight: 400;
+      line-height: 1.4;
+    }
+    .add-agent .check { display: flex; align-items: flex-start; gap: 0.45rem; font-size: 0.85rem; color: var(--ink); }
     #add-agent-msg { margin: 0.5rem 0 0; min-height: 1.1em; }
     #add-agent-msg.err { color: var(--bad); }
     #add-agent-msg.ok { color: #89d185; }
     #github-banner {
-      margin: 0 0 0.65rem; padding: 0.65rem 0.75rem; border-radius: 6px;
+      margin: 0 0 0.65rem; padding: 0.65rem 0.75rem; border-radius: var(--radius);
       font-size: 0.88rem; border: 1px solid var(--line);
     }
     #github-banner.need { background: #2a1818; border-color: #8b2e2e; color: #f0c0c0; }
@@ -476,12 +689,14 @@ function homePage(port: number): string {
     #github-msg.err { color: var(--bad); }
     #github-msg.ok { color: #89d185; }
     #connect-banner {
-      margin: 0 0 0.75rem; padding: 0.65rem 0.75rem; border-radius: 6px;
+      margin: 0 0 0.75rem; padding: 0.65rem 0.75rem; border-radius: var(--radius);
       font-size: 0.88rem; border: 1px solid var(--line);
     }
     #connect-banner.need { background: #2a1818; border-color: #8b2e2e; color: #f0c0c0; }
     #connect-banner.ready { background: #1f2a1f; border-color: #3d7a45; color: #c5e8c3; }
-    #form.is-blocked { opacity: 0.55; pointer-events: none; }
+    /* Only dim the Run button area — keep URL + instructions editable. */
+    #form.is-blocked #submit { opacity: 0.55; }
+    #form.is-blocked .agent-picks { opacity: 0.55; }
     .reviews-head {
       display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
       gap: 0.5rem; margin-bottom: 0.75rem;
@@ -489,8 +704,8 @@ function homePage(port: number): string {
     .reviews-head h2 { margin: 0; font-size: 1.05rem; color: #fff; font-weight: 600; }
     .review-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.65rem; }
     .review-item {
-      border: 1px solid var(--line); border-radius: 8px; padding: 0.8rem 0.9rem;
-      background: #1e1e1e; display: grid; gap: 0.45rem;
+      border: 1px solid var(--line); border-radius: var(--radius); padding: 0.8rem 0.9rem;
+      background: var(--card); display: grid; gap: 0.45rem;
     }
     .review-item .top {
       display: flex; flex-wrap: wrap; gap: 0.45rem 0.75rem; align-items: center;
@@ -505,8 +720,13 @@ function homePage(port: number): string {
     }
     .review-item a.btn-link:hover { border-color: var(--accent); }
     .review-item select {
-      background: #1e1e1e; color: var(--ink); border: 1px solid var(--line);
-      border-radius: 4px; padding: 0.25rem 0.4rem; font-size: 0.78rem;
+      background: var(--inset);
+      color: var(--ink);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 4px 28px 4px 8px;
+      font-size: 12px;
+      color-scheme: dark;
     }
     .pill.running { color: var(--warn); border-color: #6e6a3a; background: #2a2818; }
     .pill.needs_triage { color: #9cdcfe; border-color: #3a5a7a; background: #1a2430; }
@@ -516,26 +736,278 @@ function homePage(port: number): string {
     .pill.cleared { color: #89d185; border-color: #3d7a45; background: #1f2a1f; }
     .pill.incomplete { color: var(--muted); }
     #reviews-empty { color: var(--muted); font-size: 0.9rem; margin: 0; }
+    .review-table {
+      width: 100%;
+      border-collapse: collapse;
+      font: 400 13px/20px "Hanken Grotesk", sans-serif;
+    }
+    .review-table th {
+      text-align: left;
+      font: 600 11px/16px "Hanken Grotesk", sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .review-table td {
+      padding: 8px 12px;
+      min-height: 36px;
+      height: auto;
+      border-bottom: 1px solid var(--line);
+      vertical-align: middle;
+    }
+    .review-table tr { cursor: pointer; }
+    .review-table tr:hover td { background: var(--raised); }
+    .review-table tr.is-selected td { background: var(--raised); }
+    .review-table tr.is-warn td { color: var(--warn); }
+    /* Never set display:flex on the <td> — that breaks table layout and stacks controls. */
+    .review-table td.actions {
+      width: 1%;
+      white-space: nowrap;
+    }
+    .review-table .actions-inner {
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 6px;
+      align-items: center;
+    }
+    .review-table .actions-inner a.btn-link {
+      display: inline-block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--accent);
+      text-decoration: none;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 4px 8px;
+      background: var(--inset);
+      white-space: nowrap;
+    }
+    .review-table .actions-inner a.btn-link:hover { border-color: var(--accent); color: #fff; }
+    .review-table .actions-inner select {
+      max-width: 9.5rem;
+      flex-shrink: 0;
+    }
+    .review-table .actions-inner .danger {
+      padding: 4px 8px;
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+    .review-table .findings-cell { font-family: "Hanken Grotesk", sans-serif; font-size: 13px; }
+    .review-table .findings-cell.is-block { color: var(--bad); font-weight: 600; }
+    .status-dot {
+      display: inline-block; width: 7px; height: 7px; border-radius: 99px;
+      margin-right: 6px; background: var(--accent); vertical-align: middle;
+    }
+    .status-dot.verified, .status-dot.cleared { background: #6e6e6e; }
+    .status-dot.awaiting_author, .status-dot.ready_to_verify { background: var(--warn); }
+    .status-dot.running { background: var(--accent); }
+    .dash-split {
+      display: grid;
+      grid-template-columns: 1fr 220px;
+      gap: 12px;
+      margin-top: 16px;
+    }
+    @media (max-width: 800px) { .dash-split { grid-template-columns: 1fr; } }
+    .dash-box {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--card);
+      padding: 16px;
+      min-height: 88px;
+    }
+    .dash-box .section-label { margin: 0 0 10px; }
+    .activity-empty {
+      display: flex; align-items: center; gap: 10px;
+      color: var(--muted); font-size: 13px; margin: 0;
+    }
+    .metric-row {
+      display: flex; justify-content: space-between; gap: 8px;
+      padding: 8px 0; border-bottom: 1px solid var(--line);
+      font-size: 13px;
+    }
+    .metric-row:last-child { border-bottom: 0; }
+    .metric-row .val { font-weight: 600; color: var(--accent); }
+    .metric-row .val.bad { color: var(--bad); }
+    .step {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 16px;
+      background: var(--card);
+    }
+    .step details {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--inset);
+      padding: 0 12px 8px;
+    }
+    .step details > summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 10px 0;
+      color: #fff;
+      font-weight: 600;
+      font-size: 13px;
+    }
+    .step details > summary::-webkit-details-marker { display: none; }
+    .step details > summary::after {
+      content: "▾";
+      float: right;
+      color: var(--muted);
+    }
+    .step-head {
+      display: flex; align-items: center; gap: 10px;
+      margin: 0 0 12px; font-weight: 600; color: #fff;
+    }
+    .step-num {
+      width: 22px; height: 22px; border-radius: 99px;
+      background: var(--accent); color: var(--on-primary);
+      font: 700 12px/22px "Hanken Grotesk", sans-serif;
+      text-align: center;
+    }
+    .fetch-row { display: block; }
+    .agent-picks {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+    }
+    @media (max-width: 700px) { .agent-picks { grid-template-columns: 1fr; } }
+    .agent-pick {
+      display: grid; grid-template-columns: auto 1fr auto; gap: 8px;
+      align-items: start; margin: 0; padding: 12px;
+      border: 1px solid var(--line); border-radius: var(--radius);
+      background: var(--card); cursor: pointer;
+      text-transform: none; letter-spacing: 0; font-size: 13px;
+      color: var(--ink); font-weight: 400;
+    }
+    .agent-pick.is-on {
+      border-color: var(--accent);
+      background: #152029;
+    }
+    .agent-pick.is-off { opacity: 0.55; cursor: default; }
+    .agent-pick strong { display: block; color: #fff; font-size: 13px; }
+    .agent-pick .pick-desc { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+    .agent-pick .setup-link {
+      display: inline; background: none; border: 0; color: var(--accent);
+      font: 600 11px "Hanken Grotesk", sans-serif; padding: 0; cursor: pointer;
+    }
+    .agent-pick .setup-link:hover { background: none; text-decoration: underline; }
+    .run-row { display: flex; justify-content: flex-end; margin-top: 8px; }
+    .live-head {
+      display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between;
+      gap: 12px; margin-bottom: 12px;
+    }
+    .live-head h2 { margin: 0; font-size: 18px; color: #fff; }
+    .factory {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 12px; margin: 8px 0 16px;
+    }
+    .factory-card {
+      border: 1px solid var(--line); border-radius: var(--radius);
+      background: var(--card); padding: 14px; cursor: pointer;
+      border-top: 3px solid #6e6e6e;
+    }
+    .factory-card:hover { background: var(--raised); }
+    .factory-card.ag-cursor { border-top-color: var(--cursor); }
+    .factory-card.ag-claude { border-top-color: var(--claude); }
+    .factory-card.ag-command { border-top-color: var(--command); }
+    .factory-card.is-filter { outline: 1px solid var(--accent); }
+    .factory-top { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+    .factory-name { font-weight: 700; color: #fff; letter-spacing: 0.04em; font-size: 12px; }
+    .pass-stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin: 10px 0; }
+    .pass-stat {
+      border: 1px solid var(--line); border-radius: var(--radius); padding: 6px;
+      text-align: center; font-size: 11px; color: var(--muted);
+    }
+    .pass-stat b { display: block; color: #fff; font-size: 16px; }
+    .factory-error {
+      margin: 8px 0; padding: 8px; border-radius: var(--radius);
+      background: #2a1818; border: 1px solid #8b2e2e; color: #ffdad6; font-size: 12px;
+    }
+    .factory-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+    .console-stream {
+      border: 1px solid var(--line); border-radius: var(--radius); background: #0d0e0f;
+    }
+    .console-stream > summary {
+      cursor: pointer; padding: 8px 12px; font-weight: 600; color: #fff;
+    }
+    .console-stream .logs { margin: 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; }
   </style>
 </head>
 <body>
-  <main>
-    <h1>PRism</h1>
-    <p class="lede">Clone, <code>pnpm prsm</code>, review. Public PRs need no GitHub CLI. Add any AI agent from this page.</p>
-
-    <section class="card" id="reviews-card">
-      <div class="reviews-head">
-        <h2>Your reviews</h2>
-        <button type="button" class="btn-secondary" id="btn-refresh-reviews">Refresh</button>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand-row">
+        <div class="logo-mark">P</div>
+        <div>
+          <div class="brand">PRism</div>
+          <p class="brand-sub">Local Review Desk</p>
+        </div>
       </div>
-      <p id="reviews-empty" hidden>No local reviews yet. Run one below.</p>
-      <ul class="review-list" id="review-list"></ul>
+      <nav>
+        <button type="button" class="nav-item is-active" data-nav="inbox">Home</button>
+        <button type="button" class="nav-item" data-nav="run">New Review</button>
+        <button type="button" class="nav-item" data-nav="settings">Settings</button>
+      </nav>
+      <div class="sidebar-foot">
+        <button type="button" class="nav-item" data-nav="live" id="sidebar-status">Status</button>
+      </div>
+    </aside>
+    <div class="stage">
+      <header class="topbar">
+        <p class="ws-title">PRism Workspace</p>
+        <nav class="ws-tabs" aria-label="Workspace">
+          <button type="button" data-nav="live" id="tab-live">Live run</button>
+          <a href="#" id="tab-triage" class="is-off">Triage</a>
+          <a href="#" id="tab-list" class="is-off">List</a>
+          <a href="#" id="tab-verify" class="is-off">Verify</a>
+        </nav>
+        <div class="ws-utils">
+          <span class="pill warn" id="github-pill">GitHub…</span>
+          <span class="pill warn" id="connect-pill">Agents…</span>
+        </div>
+      </header>
+      <div class="stage-body">
+
+    <section class="view" data-view="inbox">
+      <h2 class="display">Your reviews</h2>
+      <p class="lede">Inbox of past reviews</p>
+      <div class="card" id="reviews-card">
+      <div class="reviews-head">
+        <p class="section-label">PRs on this machine</p>
+        <div>
+          <button type="button" id="btn-new-review">New review</button>
+          <button type="button" class="btn-secondary" id="btn-refresh-reviews">Refresh</button>
+        </div>
+      </div>
+      <p id="reviews-empty" hidden>No local reviews yet. Start a New review.</p>
+      <table class="review-table" id="review-table" hidden>
+        <thead>
+          <tr><th>PR #</th><th>Title</th><th>Status</th><th>Findings</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="review-list"></tbody>
+      </table>
+      </div>
+      <div class="dash-split">
+        <div class="dash-box" id="activity-box">
+          <p class="section-label">Activity context</p>
+          <p class="activity-empty" id="activity-empty">Select a review row above to view dense analytics and activity streams</p>
+          <div id="activity-detail" hidden></div>
+        </div>
+        <div class="dash-box">
+          <p class="section-label">Metrics</p>
+          <div class="metric-row">Open findings <span class="val" id="metric-open">0</span></div>
+          <div class="metric-row">Pending blockers <span class="val bad" id="metric-blockers">0</span></div>
+        </div>
+      </div>
     </section>
 
+    <section class="view" data-view="settings" hidden>
+      <h2 class="display">Settings</h2>
+      <p class="lede">Setup only. GitHub is for private repos. Agents are CLIs already installed on this computer.</p>
     <section class="card" id="github-connect">
       <div class="connect-head">
-        <h2>Connect GitHub</h2>
-        <span class="pill warn" id="github-pill">Checking…</span>
+        <h2>GitHub access</h2>
       </div>
       <p id="github-banner" class="need">Checking GitHub access…</p>
       <p class="hint">Public pull requests work with no login. Private repos need a token (saved in ~/.prsm, not git) or the GitHub CLI.</p>
@@ -554,30 +1026,30 @@ function homePage(port: number): string {
 
     <section class="card" id="connect">
       <div class="connect-head">
-        <h2>Connect agents</h2>
-        <div>
-          <span class="pill warn" id="connect-pill">Checking…</span>
-          <button type="button" class="btn-secondary" id="btn-recheck" style="margin-left:0.5rem">Re-check</button>
-        </div>
+        <h2>AI agents</h2>
+        <button type="button" class="btn-secondary" id="btn-recheck">Re-check</button>
       </div>
       <p id="connect-banner" class="need">Looking for local agent CLIs…</p>
       <div class="agent-grid" id="agent-grid"></div>
       <details class="add-agent" id="add-agent">
         <summary>Add your own agent</summary>
-        <p class="hint">Any CLI on this machine that accepts a prompt. Saved in your user folder (~/.prsm), not in git. Examples: codex, gemini, aider.</p>
+        <p class="hint">For CLIs that are <strong>not</strong> already listed above (Cursor, Claude Code, Command Code are built-in). Install the product, then put the <em>terminal program name</em> here. Saved in ~/.prsm, not git.</p>
         <form id="add-agent-form" class="fields">
           <label>Name
             <input id="custom-name" type="text" name="name" placeholder="Codex" autocomplete="off" />
+            <span class="field-hint">Label on cards. Example: Codex</span>
           </label>
           <label>Command
             <input id="custom-command" type="text" name="command" required placeholder="codex" autocomplete="off" />
+            <span class="field-hint">The one word you type in a terminal after install. From that product’s docs (Codex → <code>codex</code>, Gemini CLI → <code>gemini</code>, Aider → <code>aider</code>). Check with <code>codex --version</code> or Windows <code>where.exe codex</code>.</span>
           </label>
           <label class="span-2">Extra flags (optional)
-            <input id="custom-flags" type="text" name="extraFlags" placeholder="--output-format text" autocomplete="off" />
+            <input id="custom-flags" type="text" name="extraFlags" placeholder="--output-format text --trust" autocomplete="off" />
+            <span class="field-hint">Copy the <strong>non-interactive / print / CI</strong> flags from that CLI’s own docs so it prints an answer and exits (no TUI, no “trust this folder?” prompt). Leave blank if unsure. If a run hangs with an empty log, that’s usually a missing flag like <code>--trust</code>, <code>--yes</code>, or <code>--print</code>.</span>
           </label>
           <label class="check span-2">
             <input id="custom-dash-p" type="checkbox" checked />
-            <span>Pass the prompt as -p (uncheck if the CLI wants the prompt as the last argument)</span>
+            <span>Pass the prompt as <code>-p</code> (keep on for Codex / Gemini-style CLIs). Uncheck if the docs show the prompt as the last argument (Aider-style).</span>
           </label>
           <div class="span-2">
             <button type="submit" class="btn-secondary" id="btn-add-agent">Add agent</button>
@@ -585,45 +1057,82 @@ function homePage(port: number): string {
         </form>
         <p id="add-agent-msg" class="hint"></p>
       </details>
-      <p class="hint" style="margin-bottom:0">PRism talks to CLIs on your machine — no PRism cloud account. Install any one agent to start, or add your own. More agents = more perspectives.</p>
+      <p class="hint" style="margin-bottom:0">PRism talks to CLIs on this machine — no PRism cloud account. You need any one agent. More agents = more perspectives.</p>
+    </section>
     </section>
 
-    <form class="card" id="form">
-      <label for="pr">Pull request URL</label>
-      <input id="pr" name="pr" type="url" required placeholder="https://github.com/org/repo/pull/123" autocomplete="off" />
-      <label style="margin-top:0.9rem" for="extra-instructions">Review instructions</label>
-      <p class="hint" style="margin:0 0 0.45rem">These ride along with every agent/pass for this run. Edit freely — defaults are naming-in-context + hard-review lenses. Cleared text = no extra section (built-in prompts/rules still apply).</p>
-      <textarea id="extra-instructions" name="extra-instructions" spellcheck="true"></textarea>
-      <div class="instr-toolbar">
-        <button type="button" class="btn-secondary" id="btn-reset-instructions">Reset to default</button>
-      </div>
-      <div class="rule-toggles">
-        <label for="require-decisions-md">
-          <input type="checkbox" id="require-decisions-md" />
-          <span>Require design-decision markdown on this PR</span>
+    <section class="view" data-view="run" hidden>
+    <h2 class="display">New review setup wizard</h2>
+    <p class="lede">Configure automated agents to review a specific pull request.</p>
+    <form id="form">
+      <div class="step">
+        <p class="step-head"><span class="step-num">1</span> Repository context</p>
+        <label for="pr">GitHub PR URL
+          <input id="pr" name="pr" type="url" required placeholder="https://github.com/org/repo/pull/123" autocomplete="off" />
         </label>
-        <p class="hint">Team rule (optional). When checked, reviewers treat a missing/thin decisions <code>.md</code> as a <strong>blocker</strong>. Leave unchecked for generic / open-source reviews.</p>
+        <p class="hint" style="margin:8px 0 0">Paste the URL and continue — the review job loads the PR when it starts. Private repos need Settings → Connect GitHub.</p>
       </div>
-      <label style="margin-top:0.85rem">Use these agents</label>
-      <div class="agents" id="agent-checks"></div>
-      <button type="submit" id="submit">Run review</button>
-      <p class="hint">Agents run in parallel. Each agent runs 3 specialist passes at once (correctness, nitpick, devil's-advocate). Live CLI output is color-coded per agent.</p>
+      <div class="step">
+        <p class="step-head"><span class="step-num">2</span> Select agents</p>
+        <div class="agent-picks" id="agent-checks"></div>
+      </div>
+      <div class="step">
+        <p class="step-head"><span class="step-num">3</span> Review options</p>
+        <details>
+          <summary>Review instructions (optional)</summary>
+          <p class="hint" style="margin:8px 0">Editable. Sent to every agent on the next Run. Defaults are naming-in-context + hard-review lenses. Clear the box for built-in prompts only. Saved in this browser.</p>
+          <textarea id="extra-instructions" name="extra-instructions" spellcheck="true" rows="12"></textarea>
+          <div class="instr-toolbar">
+            <button type="button" class="btn-secondary" id="btn-reset-instructions">Reset to default</button>
+          </div>
+        </details>
+        <div class="rule-toggles" style="margin-top:12px">
+          <label for="require-decisions-md">
+            <input type="checkbox" id="require-decisions-md" />
+            <span>Require design-decision <code>.md</code> output</span>
+          </label>
+          <p class="hint">Team rule (optional). When checked, missing/thin decisions <code>.md</code> is a <strong>blocker</strong>.</p>
+        </div>
+      </div>
+      <div class="run-row">
+        <button type="submit" id="submit">Run Review</button>
+      </div>
     </form>
+    </section>
 
+    <section class="view" data-view="live" hidden>
+      <p class="lede" id="live-empty">No run in progress. Start a New Review, then watch agents here.</p>
     <section class="card" id="job-panel" hidden>
-      <div id="status">—</div>
-      <p class="job-meta" id="job-meta"></p>
-      <div class="job-actions">
-        <button type="button" class="danger" id="btn-stop" hidden>Force stop</button>
-        <button type="button" class="btn-secondary" id="btn-restart" hidden>Restart</button>
+      <div class="live-head">
+        <div>
+          <h2 id="status">—</h2>
+          <p class="lede" style="margin:4px 0 0">Real-time multi-agent factory status.</p>
+          <p class="job-meta" id="job-meta"></p>
+        </div>
+        <div class="job-actions">
+          <button type="button" class="danger" id="btn-stop" hidden>Force stop</button>
+          <button type="button" class="btn-secondary" id="btn-restart" hidden>Restart</button>
+        </div>
       </div>
       <div id="links"></div>
-      <div id="agent-progress" class="agent-progress" hidden></div>
+      <div id="agent-progress" class="factory" hidden></div>
       <p id="log-filter-hint" class="log-filter-hint" hidden></p>
       <ul class="results" id="results"></ul>
-      <div id="logs" class="logs"></div>
+      <details class="console-stream" open>
+        <summary>Multi-Agent Console Stream</summary>
+        <div id="logs" class="logs"></div>
+      </details>
     </section>
-  </main>
+    </section>
+
+      </div>
+      <footer class="statusbar">
+        <span id="statusbar-ok">System Operational</span>
+        <span id="statusbar-mid">localhost</span>
+        <span id="statusbar-right">hub :${port}</span>
+      </footer>
+    </div>
+  </div>
   <script>
 (function () {
   const form = document.getElementById("form");
@@ -660,12 +1169,68 @@ function homePage(port: number): string {
   const REQUIRE_DECISIONS_STORAGE_KEY = ${JSON.stringify(REQUIRE_DECISIONS_MD_STORAGE_KEY)};
   let pollTimer = 0;
   let jobId = "";
+  /** True while the attached Live job is queued/running — locks Run Review only then. */
+  let jobIsActive = false;
   let lastPrRef = "";
   let lastAgents = [];
   let lastExtraInstructions = "";
   let lastRequireDecisionsMd = false;
   let readyIds = [];
   let logFilter = "";
+
+  const VIEW_TITLES = {
+    inbox: "home",
+    run: "run",
+    live: "live",
+    settings: "settings",
+  };
+  let selectedPr = null;
+  function syncWsTabs() {
+    var n = selectedPr && selectedPr.prNumber;
+    ["tab-triage", "tab-list", "tab-verify"].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      if (!n) {
+        el.href = "#";
+        el.classList.add("is-off");
+        return;
+      }
+      el.classList.remove("is-off");
+      if (id === "tab-triage") el.href = "/pr/" + n + "/";
+      if (id === "tab-list") el.href = "/pr/" + n + "/final-review.html";
+      if (id === "tab-verify") el.href = "/pr/" + n + "/verify-report.html";
+    });
+  }
+  function showView(name) {
+    document.querySelectorAll("[data-view]").forEach(function (el) {
+      el.hidden = el.getAttribute("data-view") !== name;
+    });
+    document.querySelectorAll(".sidebar .nav-item").forEach(function (el) {
+      var nav = el.getAttribute("data-nav");
+      el.classList.toggle("is-active", nav === name || (name === "inbox" && nav === "inbox"));
+      if (nav === "live") el.classList.toggle("is-active", name === "live");
+    });
+    var liveTab = document.getElementById("tab-live");
+    if (liveTab) liveTab.classList.toggle("is-active", name === "live");
+    var hash = location.hash || "";
+    if (hash.indexOf("#job=") !== 0) {
+      var next = name === "inbox" ? "#home" : "#" + name;
+      if (hash !== next) history.replaceState(null, "", next);
+    }
+  }
+  document.querySelectorAll(".nav-item").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      showView(btn.getAttribute("data-nav"));
+    });
+  });
+  var btnNewReview = document.getElementById("btn-new-review");
+  if (btnNewReview) {
+    btnNewReview.addEventListener("click", function () { showView("run"); });
+  }
+  var liveTab = document.getElementById("tab-live");
+  if (liveTab) {
+    liveTab.addEventListener("click", function () { showView("live"); });
+  }
 
   function agentClass(name) {
     var key = String(name || "").toLowerCase();
@@ -735,9 +1300,31 @@ function homePage(port: number): string {
     if (logFilterHint) {
       logFilterHint.hidden = !logFilter;
       logFilterHint.textContent = logFilter
-        ? "Showing " + logFilter + " only — click the agent card again to show everyone."
+        ? "Showing " + logFilter + " logs only — click the card again for everyone. Use “This agent’s findings” for that agent’s triage."
         : "";
     }
+  }
+
+  function agentRunLinks(job, agent) {
+    if (!job.prNumber) return "";
+    var runId = "";
+    (job.results || []).forEach(function (r) {
+      if (r.agent !== agent || r.status !== "ok") return;
+      if (r.runId) {
+        runId = r.runId;
+        return;
+      }
+      if (typeof r.detail === "string" && r.detail.indexOf("runs/") === 0) {
+        runId = r.detail.slice("runs/".length).split("/")[0];
+      }
+    });
+    if (!runId) return "";
+    var base = "/pr/" + job.prNumber + "/runs/" + encodeURIComponent(runId);
+    return (
+      '<span class="progress-links">' +
+        '<a href="' + base + '/triage.html">View findings</a>' +
+      "</span>"
+    );
   }
 
   function renderProgress(job) {
@@ -752,37 +1339,46 @@ function homePage(port: number): string {
     var shared = job.progress && job.progress.sharedLabel
       ? '<p class="progress-shared">' + escapeLog(job.progress.sharedLabel) + "</p>"
       : "";
-    progressEl.innerHTML = shared + tracks.map(function (track) {
+    progressEl.innerHTML = tracks.map(function (track) {
       var pct = trackPercent(track);
-      var doneCount = (track.passes || []).filter(function (p) {
-        return p.status === "done" || p.status === "error";
-      }).length;
-      var total = (track.passes || []).length || 3;
-      var elapsed = elapsedLabel(track);
-      var chips = (track.passes || []).map(function (pass) {
-        var extra = "";
-        if (pass.status === "done" && pass.findings != null) extra = " · " + pass.findings;
-        return '<span class="pass-chip ' + escapeLog(pass.status) + '">' +
-          escapeLog(pass.id) + extra + "</span>";
+      var result = (job.results || []).find(function (r) { return r.agent === track.agent; });
+      var passHtml = (track.passes || []).map(function (pass) {
+        var label = pass.id === "devils-advocate" ? "Devil's Adv." : pass.id;
+        var n = pass.findings != null ? pass.findings : "—";
+        return '<div class="pass-stat">' + escapeLog(label) + "<b>" + n + "</b></div>";
       }).join("");
-      var cls = "progress-track " + agentClass(track.agent);
+      var cls = "factory-card " + agentClass(track.agent);
       if (track.status === "done") cls += " is-done";
       if (track.status === "error") cls += " is-error";
       if (logFilter === track.agent) cls += " is-filter";
+      var badge = track.status === "error"
+        ? '<span class="pill bad">Failed</span>'
+        : track.status === "done"
+          ? '<span class="pill ok">Done</span>'
+          : '<span class="pill running">' + pct + "%</span>";
+      var err = "";
+      if (track.status === "error" && result && result.detail) {
+        err = '<p class="factory-error">' + escapeLog(result.detail) + "</p>";
+      }
+      var links = agentRunLinks(job, track.agent);
+      var foot = track.status === "running"
+        ? "Running…"
+        : track.label || track.status;
       return (
         '<article class="' + cls + '" data-agent="' + escapeLog(track.agent) + '">' +
-          '<div class="progress-top">' +
-            '<span class="progress-name">' + escapeLog(track.agent) + "</span>" +
-            '<span class="progress-meta">' + doneCount + "/" + total +
-            (elapsed ? " · " + elapsed : "") + " · " + pct + "%</span>" +
-          "</div>" +
+          '<div class="factory-top"><span class="factory-name">' + escapeLog(String(track.agent).toUpperCase()) + "</span>" + badge + "</div>" +
           '<div class="bar"><span style="width:' + pct + '%"></span></div>' +
-          '<div class="pass-row">' + chips + "</div>" +
-          '<p class="progress-label">' + escapeLog(track.label || "") + "</p>" +
+          (track.status === "error" ? err : '<div class="pass-stats">' + passHtml + "</div>") +
+          '<div class="factory-foot"><span>' + escapeLog(foot) + "</span>" + (links || "") + "</div>" +
         "</article>"
       );
     }).join("");
-    progressEl.querySelectorAll(".progress-track").forEach(function (node) {
+    progressEl.querySelectorAll(".factory-card").forEach(function (node) {
+      node.querySelectorAll("a").forEach(function (link) {
+        link.addEventListener("click", function (ev) {
+          ev.stopPropagation();
+        });
+      });
       node.addEventListener("click", function () {
         var name = node.getAttribute("data-agent") || "";
         logFilter = logFilter === name ? "" : name;
@@ -843,13 +1439,22 @@ function homePage(port: number): string {
     return currentInstructions().trim();
   }
 
+  function syncSubmitEnabled(blockedMessage) {
+    const noAgents = form.classList.contains("is-blocked");
+    submit.disabled = noAgents || jobIsActive;
+    if (noAgents) {
+      submit.textContent = blockedMessage || "Connect an agent first";
+    } else if (jobIsActive) {
+      submit.textContent = "Running…";
+    } else {
+      submit.textContent = "Run Review";
+    }
+  }
+
   function setFormBlocked(blocked, message) {
     form.classList.toggle("is-blocked", Boolean(blocked));
-    submit.disabled = Boolean(blocked);
-    if (instructionsEl) instructionsEl.disabled = Boolean(blocked) || Boolean(pollTimer);
-    if (resetInstrBtn) resetInstrBtn.disabled = Boolean(blocked) || Boolean(pollTimer);
-    if (blocked) submit.textContent = message || "Connect an agent first";
-    else if (!pollTimer) submit.textContent = "Run review";
+    // Do not key off pollTimer — that left Run Review stuck disabled after a finished job.
+    syncSubmitEnabled(message);
   }
 
   function renderConnect(body) {
@@ -866,8 +1471,8 @@ function homePage(port: number): string {
     if (connectBanner) {
       connectBanner.className = readyCount ? "ready" : "need";
       connectBanner.textContent = readyCount
-        ? "Ready to review. Pick which agents to run below — or install more for broader coverage."
-        : "No local agent CLI found yet. Install one below, finish login, then hit Re-check.";
+        ? "Ready. Start a New review and pick which agents to run."
+        : "No local agent CLI found yet. Install one below, finish login, then Re-check.";
     }
 
     if (agentGrid) {
@@ -933,20 +1538,57 @@ function homePage(port: number): string {
       agentChecks.innerHTML = "";
       agents.forEach(function (agent) {
         const label = document.createElement("label");
+        label.className = "agent-pick" + (agent.available ? " is-on" : " is-off");
         const box = document.createElement("input");
         box.type = "checkbox";
         box.name = "agent";
         box.value = agent.id;
         box.checked = Boolean(agent.available);
         box.disabled = !agent.available;
-        label.style.opacity = agent.available ? "1" : "0.5";
+        box.addEventListener("change", function () {
+          label.classList.toggle("is-on", box.checked);
+        });
+        const body = document.createElement("span");
+        const strong = document.createElement("strong");
+        strong.textContent = agent.name || agent.id;
+        const desc = document.createElement("p");
+        desc.className = "pick-desc";
+        desc.textContent = agent.summary || ("CLI: " + agent.command);
+        body.appendChild(strong);
+        body.appendChild(desc);
+        if (!agent.available) {
+          const setup = document.createElement("button");
+          setup.type = "button";
+          setup.className = "setup-link";
+          setup.textContent = "Setup in Settings";
+          setup.addEventListener("click", function (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            showView("settings");
+          });
+          body.appendChild(setup);
+        }
+        const badge = document.createElement("span");
+        badge.className = "pill " + (agent.available ? "ok" : "bad");
+        badge.textContent = agent.available ? "Ready" : "Not Configured";
         label.appendChild(box);
-        label.appendChild(document.createTextNode(" " + (agent.name || agent.id)));
+        label.appendChild(body);
+        label.appendChild(badge);
         agentChecks.appendChild(label);
       });
     }
 
     setFormBlocked(readyCount === 0);
+    var mid = document.getElementById("statusbar-mid");
+    if (mid) {
+      mid.textContent = readyCount
+        ? readyCount + " agent" + (readyCount === 1 ? "" : "s") + " ready"
+        : "connect an agent in Settings";
+    }
+    var okBar = document.getElementById("statusbar-ok");
+    if (okBar) {
+      okBar.textContent = readyCount ? "System Operational" : "Needs an agent";
+    }
   }
 
   async function loadProviders() {
@@ -1120,6 +1762,9 @@ function homePage(port: number): string {
 
   function startPolling(id) {
     jobId = id;
+    var liveEmpty = document.getElementById("live-empty");
+    if (liveEmpty) liveEmpty.hidden = true;
+    showView("live");
     if (pollTimer) window.clearInterval(pollTimer);
     pollTimer = window.setInterval(poll, 1000);
     poll();
@@ -1127,14 +1772,21 @@ function homePage(port: number): string {
 
   function renderJob(job) {
     panel.hidden = false;
+    var liveEmpty = document.getElementById("live-empty");
+    if (liveEmpty) liveEmpty.hidden = true;
     statusEl.className = job.status;
     var errAgents = (job.results || []).filter(function (r) { return r.status === "error"; }).length;
     var okAgents = (job.results || []).filter(function (r) { return r.status === "ok"; }).length;
-    if (job.status === "done" && errAgents > 0 && okAgents > 0) {
-      statusEl.textContent =
-        "DONE (partial) · " + okAgents + " ok / " + errAgents + " failed · " + (job.prRef || "");
-    } else {
-      statusEl.textContent = job.status.toUpperCase() + " · " + (job.prRef || "");
+    var title = job.prNumber ? ("PR #" + job.prNumber) : "Live run";
+    if (job.prRef && String(job.prRef).indexOf("http") !== 0) title += ": " + job.prRef;
+    var pillClass = job.status === "error" ? "bad" : job.status === "done" ? "ok" : "running";
+    var pillText = job.status === "done" && errAgents > 0 && okAgents > 0
+      ? "Partial"
+      : job.status;
+    statusEl.innerHTML = escapeLog(title) + ' <span class="pill ' + pillClass + '">' + escapeLog(pillText) + "</span>";
+    if (job.prNumber) {
+      selectedPr = { prNumber: job.prNumber, href: "/pr/" + job.prNumber + "/", listHref: "/pr/" + job.prNumber + "/final-review.html", verifyHref: "/pr/" + job.prNumber + "/verify-report.html" };
+      syncWsTabs();
     }
     var meta = "Job " + job.id;
     if (job.agents && job.agents.length) meta += " · agents: " + job.agents.join(", ");
@@ -1164,17 +1816,10 @@ function homePage(port: number): string {
       }
     }
 
-    if (instructionsEl) instructionsEl.disabled = active;
-    if (resetInstrBtn) resetInstrBtn.disabled = active;
+    // Instructions stay editable for the next run; only Run Review is locked while a job runs.
     if (requireDecisionsEl) requireDecisionsEl.disabled = active;
-
-    if (active) {
-      submit.disabled = true;
-      submit.textContent = "Running…";
-    } else {
-      submit.disabled = false;
-      submit.textContent = "Run review";
-    }
+    jobIsActive = active;
+    syncSubmitEnabled();
 
     renderProgress(job);
     renderLogs(job);
@@ -1234,6 +1879,8 @@ function homePage(port: number): string {
       if (job.status === "done" || job.status === "error" || job.status === "cancelled") {
         window.clearInterval(pollTimer);
         pollTimer = 0;
+        jobIsActive = false;
+        syncSubmitEnabled();
       }
     } catch (e) {
       statusEl.className = "error";
@@ -1265,8 +1912,6 @@ function homePage(port: number): string {
     }
     submit.disabled = true;
     submit.textContent = "Starting…";
-    if (instructionsEl) instructionsEl.disabled = true;
-    if (resetInstrBtn) resetInstrBtn.disabled = true;
     if (requireDecisionsEl) requireDecisionsEl.disabled = true;
     panel.hidden = false;
     statusEl.className = "running";
@@ -1307,10 +1952,8 @@ function homePage(port: number): string {
       if (!res.ok) throw new Error(body.error || ("HTTP " + res.status));
       startPolling(body.jobId);
     } catch (e) {
-      submit.disabled = false;
-      submit.textContent = "Run review";
-      if (instructionsEl) instructionsEl.disabled = false;
-      if (resetInstrBtn) resetInstrBtn.disabled = false;
+      jobIsActive = false;
+      syncSubmitEnabled();
       if (requireDecisionsEl) requireDecisionsEl.disabled = false;
       statusEl.className = "error";
       statusEl.textContent = e && e.message ? e.message : "Start failed";
@@ -1355,8 +1998,6 @@ function homePage(port: number): string {
       }
       submit.disabled = true;
       submit.textContent = "Restarting…";
-      if (instructionsEl) instructionsEl.disabled = true;
-      if (resetInstrBtn) resetInstrBtn.disabled = true;
       if (requireDecisionsEl) requireDecisionsEl.disabled = true;
       const extraInstructions =
         instructionsForRun() || lastExtraInstructions || DEFAULT_EXTRA;
@@ -1385,10 +2026,8 @@ function homePage(port: number): string {
       if (prInput instanceof HTMLInputElement) prInput.value = prRef;
       startPolling(body.jobId);
     } catch (e) {
-      submit.disabled = false;
-      submit.textContent = "Run review";
-      if (instructionsEl) instructionsEl.disabled = false;
-      if (resetInstrBtn) resetInstrBtn.disabled = false;
+      jobIsActive = false;
+      syncSubmitEnabled();
       if (requireDecisionsEl) requireDecisionsEl.disabled = false;
       alert(e && e.message ? e.message : "Restart failed");
     }
@@ -1408,6 +2047,7 @@ function homePage(port: number): string {
   async function loadReviews() {
     const listEl = document.getElementById("review-list");
     const emptyEl = document.getElementById("reviews-empty");
+    const tableEl = document.getElementById("review-table");
     if (!listEl) return;
     try {
       const res = await fetch("/api/reviews");
@@ -1415,59 +2055,53 @@ function homePage(port: number): string {
       const reviews = Array.isArray(body.reviews) ? body.reviews : [];
       listEl.innerHTML = "";
       if (emptyEl) emptyEl.hidden = reviews.length > 0;
+      if (tableEl) tableEl.hidden = reviews.length === 0;
+      var openSum = 0;
+      var blockSum = 0;
       reviews.forEach(function (r) {
-        const li = document.createElement("li");
-        li.className = "review-item";
+        openSum += Number(r.openFindings || 0);
+        blockSum += Number(r.blockers || 0);
+        const tr = document.createElement("tr");
+        if (r.blockers) tr.className = "is-warn";
+        if (selectedPr && selectedPr.prNumber === r.prNumber) tr.classList.add("is-selected");
 
-        const top = document.createElement("div");
-        top.className = "top";
-        const title = document.createElement("p");
-        title.className = "title";
-        title.textContent = "PR #" + r.prNumber + " — " + (r.title || "(untitled)");
-        const pill = document.createElement("span");
-        pill.className = "pill " + r.status;
-        pill.textContent = r.statusLabel || r.status;
-        top.appendChild(title);
-        top.appendChild(pill);
-
-        const meta = document.createElement("p");
-        meta.className = "meta";
-        var bits = [];
-        bits.push(r.openFindings + " open");
-        if (r.blockers) bits.push(r.blockers + " blocker");
-        if (r.majors) bits.push(r.majors + " major");
-        if (r.falseAlarms) bits.push(r.falseAlarms + " false alarm");
-        if (r.readiness) bits.push(r.readiness);
-        if (r.verify) {
-          bits.push(
-            "verify: " +
-              r.verify.resolved +
-              " resolved / " +
-              r.verify.still_open +
-              " open",
-          );
+        function td(text, cls) {
+          const cell = document.createElement("td");
+          if (cls) cell.className = cls;
+          cell.textContent = text;
+          return cell;
         }
-        bits.push("updated " + String(r.updatedAt || "").replace("T", " ").slice(0, 16));
-        if (r.note) bits.push(r.note);
-        meta.textContent = bits.join(" · ");
+        tr.appendChild(td("#" + r.prNumber, "pr-num"));
+        tr.appendChild(td(r.title || "(untitled)"));
+        const statusTd = document.createElement("td");
+        const dot = document.createElement("span");
+        dot.className = "status-dot " + r.status;
+        statusTd.appendChild(dot);
+        statusTd.appendChild(document.createTextNode(r.statusLabel || r.status));
+        tr.appendChild(statusTd);
+        const findTd = document.createElement("td");
+        findTd.className = "findings-cell" + (r.blockers ? " is-block" : "");
+        findTd.textContent = r.blockers
+          ? r.blockers + " Blocker" + (r.blockers === 1 ? "" : "s")
+          : r.openFindings
+            ? r.openFindings + " Findings"
+            : "0 Open";
+        tr.appendChild(findTd);
 
-        const actions = document.createElement("div");
+        const actions = document.createElement("td");
         actions.className = "actions";
+        const actionsInner = document.createElement("div");
+        actionsInner.className = "actions-inner";
         const open = document.createElement("a");
         open.className = "btn-link";
         open.href = r.href || ("/pr/" + r.prNumber + "/");
-        open.textContent = "Open";
+        open.textContent = "Triage";
         const list = document.createElement("a");
         list.className = "btn-link";
         list.href = r.listHref || ("/pr/" + r.prNumber + "/final-review.html");
         list.textContent = "List";
-        if (r.hasVerifyReport) {
-          const v = document.createElement("a");
-          v.className = "btn-link";
-          v.href = r.verifyHref || ("/pr/" + r.prNumber + "/verify-report.html");
-          v.textContent = "Verify report";
-          actions.appendChild(v);
-        }
+        actionsInner.appendChild(open);
+        actionsInner.appendChild(list);
         const statusSel = document.createElement("select");
         statusSel.setAttribute("aria-label", "Mark status for PR " + r.prNumber);
         [
@@ -1493,9 +2127,7 @@ function homePage(port: number): string {
             const res2 = await fetch("/api/reviews/" + r.prNumber, {
               method: "PATCH",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                status: statusSel.value || null,
-              }),
+              body: JSON.stringify({ status: statusSel.value || null }),
             });
             const body2 = await res2.json();
             if (!res2.ok) throw new Error(body2.error || ("HTTP " + res2.status));
@@ -1508,7 +2140,8 @@ function homePage(port: number): string {
         removeBtn.type = "button";
         removeBtn.className = "danger";
         removeBtn.textContent = "Remove";
-        removeBtn.addEventListener("click", async function () {
+        removeBtn.addEventListener("click", async function (ev) {
+          ev.stopPropagation();
           if (!confirm("Remove local review for PR #" + r.prNumber + "? This deletes reviews/" + r.prNumber + "/")) {
             return;
           }
@@ -1516,21 +2149,46 @@ function homePage(port: number): string {
             const res2 = await fetch("/api/reviews/" + r.prNumber, { method: "DELETE" });
             const body2 = await res2.json();
             if (!res2.ok) throw new Error(body2.error || ("HTTP " + res2.status));
+            if (selectedPr && selectedPr.prNumber === r.prNumber) selectedPr = null;
+            syncWsTabs();
             loadReviews();
           } catch (e) {
             alert(e && e.message ? e.message : "Remove failed");
           }
         });
-        actions.appendChild(open);
-        actions.appendChild(list);
-        actions.appendChild(statusSel);
-        actions.appendChild(removeBtn);
-
-        li.appendChild(top);
-        li.appendChild(meta);
-        li.appendChild(actions);
-        listEl.appendChild(li);
+        actionsInner.appendChild(statusSel);
+        actionsInner.appendChild(removeBtn);
+        actions.appendChild(actionsInner);
+        actions.addEventListener("click", function (ev) { ev.stopPropagation(); });
+        tr.appendChild(actions);
+        tr.addEventListener("click", function () {
+          selectedPr = r;
+          syncWsTabs();
+          var empty = document.getElementById("activity-empty");
+          var detail = document.getElementById("activity-detail");
+          if (empty) empty.hidden = true;
+          if (detail) {
+            detail.hidden = false;
+            detail.innerHTML =
+              "<p><strong>PR #" + r.prNumber + "</strong> · " + (r.statusLabel || r.status) + "</p>" +
+              "<p class='hint'>" + (r.openFindings || 0) + " open · " +
+              (r.blockers || 0) + " blockers · " + (r.majors || 0) + " majors" +
+              (r.readiness ? " · " + r.readiness : "") + "</p>";
+          }
+          loadReviews();
+        });
+        listEl.appendChild(tr);
       });
+      var metricOpen = document.getElementById("metric-open");
+      var metricBlock = document.getElementById("metric-blockers");
+      if (metricOpen) metricOpen.textContent = String(openSum);
+      if (metricBlock) metricBlock.textContent = String(blockSum);
+      if (!selectedPr && reviews[0]) {
+        selectedPr = reviews[0];
+        syncWsTabs();
+      } else {
+        syncWsTabs();
+      }
     } catch (e) {
       if (emptyEl) {
         emptyEl.hidden = false;
@@ -1542,6 +2200,7 @@ function homePage(port: number): string {
   loadInstructions();
   loadRequireDecisionsMd();
   if (instructionsEl instanceof HTMLTextAreaElement) {
+    instructionsEl.addEventListener("input", saveInstructions);
     instructionsEl.addEventListener("change", saveInstructions);
     instructionsEl.addEventListener("blur", saveInstructions);
   }
@@ -1550,15 +2209,21 @@ function homePage(port: number): string {
   }
   if (resetInstrBtn) {
     resetInstrBtn.addEventListener("click", function () {
-      if (!(instructionsEl instanceof HTMLTextAreaElement) || instructionsEl.disabled) return;
+      if (!(instructionsEl instanceof HTMLTextAreaElement)) return;
       instructionsEl.value = DEFAULT_EXTRA;
       saveInstructions();
+      instructionsEl.focus();
     });
   }
   loadProviders();
   loadGithub();
   loadReviews();
-  attachActive();
+  attachActive().then(function () {
+    if (jobId) return;
+    var h = (location.hash || "").replace(/^#/, "");
+    if (h === "run" || h === "settings" || h === "live") showView(h);
+    else if (h === "home" || h === "inbox") showView("inbox");
+  });
   var refreshBtn = document.getElementById("btn-refresh-reviews");
   if (refreshBtn) {
     refreshBtn.addEventListener("click", function () {
@@ -1708,9 +2373,46 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
             await serveReviewStatic(res, path.join(outputDir, "triage.html"));
             return;
           }
+          if (rest === "/final-review.html") {
+            try {
+              await renderReviewFromDir(outputDir);
+            } catch {
+              /* serve whatever is on disk */
+            }
+            await serveReviewStatic(
+              res,
+              path.join(outputDir, "final-review.html"),
+            );
+            return;
+          }
+          if (rest === "/verify-report.html") {
+            const verifyPath = path.join(outputDir, "verify-report.html");
+            try {
+              await access(verifyPath);
+              await serveReviewStatic(res, verifyPath);
+            } catch {
+              let title = "";
+              try {
+                const raw = await readFile(
+                  path.join(outputDir, "run.json"),
+                  "utf8",
+                );
+                const parsed = JSON.parse(raw) as { title?: string };
+                title = parsed.title ?? "";
+              } catch {
+                /* empty title */
+              }
+              res.writeHead(200, {
+                "content-type": "text/html; charset=utf-8",
+                "cache-control": "no-store",
+              });
+              res.end(
+                renderVerifyPlaceholderHtml({ prNumber, title }),
+              );
+            }
+            return;
+          }
           const allowed = new Set([
-            "/final-review.html",
-            "/verify-report.html",
             "/findings.json",
             "/run.json",
             "/verify-report.json",
@@ -1718,6 +2420,18 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
           ]);
           if (allowed.has(rest)) {
             await serveReviewStatic(res, path.join(outputDir, rest.slice(1)));
+            return;
+          }
+          const runAsset = rest.match(
+            /^\/runs\/([A-Za-z0-9._-]+)\/(triage\.html|final-review\.html|findings\.json|run\.json)$/,
+          );
+          if (runAsset) {
+            const runId = runAsset[1]!;
+            const file = runAsset[2]!;
+            await serveReviewStatic(
+              res,
+              path.join(outputDir, "runs", runId, file),
+            );
             return;
           }
         }
@@ -2065,7 +2779,17 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
   });
 
   await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
+    server.once("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "EADDRINUSE") {
+        reject(
+          new Error(
+            `Port ${port} is already a PRism hub (http://127.0.0.1:${port}/). Stop that process (Ctrl+C) and start again so this machine loads the latest code.`,
+          ),
+        );
+        return;
+      }
+      reject(error);
+    });
     server.listen(port, "127.0.0.1", () => resolve());
   });
 

@@ -281,6 +281,7 @@ export type AgentRunResult = {
   rawFindingCount?: number;
   mergedFindingCount?: number;
   runCount?: number;
+  runId?: string;
 };
 
 export type AgentProgressEvent = {
@@ -445,6 +446,7 @@ export async function runAllCliAgents(options: {
           rawFindingCount: result.rawFindingCount,
           mergedFindingCount: result.mergedFindingCount,
           runCount: result.runCount,
+          runId: result.runId,
         };
         options.onProgress?.({
           prNumber: result.prNumber,

@@ -3,8 +3,10 @@
 ```text
 Load PR (GitHub API; gh optional) → knowledge + plan → shared overview
   → agents in parallel
-       each agent: 3 specialist passes in parallel (correctness, nitpick, devil’s advocate)
+       each agent: 3 specialist passes in parallel
+         (Command Code queues to one process at a time — three at once hung on Windows)
        each finished agent: snapshot under runs/ + rebuild merged triage
+         per-agent triage: /pr/<n>/runs/<id>/triage.html
   → evidence / documented-intent / judge → render
 ```
 

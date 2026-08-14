@@ -2,6 +2,12 @@ import type { Finding, RecheckEntry, ReviewRun } from "@review-os/schemas";
 import { normalizeTeachMeContent } from "@review-os/core";
 import { githubFileUrl } from "./github-file-link.js";
 import { renderOverviewHtml } from "./overview.js";
+import {
+  agentFindingsNavHtml,
+  workspaceChromeCloseHtml,
+  workspaceChromeCss,
+  workspaceChromeOpenHtml,
+} from "./agent-nav.js";
 import { sortFindingsForTriage } from "./sort-findings.js";
 
 function escapeHtml(value: string): string {
@@ -92,6 +98,10 @@ function clientScript(): string {
   // Works for /pr/22/, /pr/22/triage.html, and legacy single-PR /
   const BASE = (function () {
     var p = location.pathname || "/";
+    var parts = p.split("/");
+    if (parts[1] === "pr" && /^[0-9]+$/.test(parts[2] || "")) {
+      return "/pr/" + parts[2];
+    }
     if (p.endsWith("/triage.html")) p = p.slice(0, -"/triage.html".length);
     if (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
     return p === "/" ? "" : p;
@@ -396,6 +406,50 @@ function clientScript(): string {
     return base;
   }
 
+  function renderQueue() {
+    var host = document.getElementById("finding-queue");
+    var countEl = document.getElementById("queue-count");
+    if (!host) return;
+    var q = queue();
+    if (countEl) countEl.textContent = q.length + " open";
+    var groups = [
+      { key: "blocker", title: "Critical", cls: "is-crit", items: [] },
+      { key: "major", title: "Major", cls: "", items: [] },
+      { key: "rest", title: "Other", cls: "", items: [] },
+    ];
+    q.forEach(function (item) {
+      if (item.severity === "blocker") groups[0].items.push(item);
+      else if (item.severity === "major") groups[1].items.push(item);
+      else groups[2].items.push(item);
+    });
+    var currentId = current() ? current().id : "";
+    host.innerHTML = groups.filter(function (g) { return g.items.length; }).map(function (g) {
+      return '<p class="queue-group ' + g.cls + '">' + g.title + " (" + g.items.length + ")</p>" +
+        g.items.map(function (item) {
+          var loc = String(item.file || "").split("/").pop() + ":" + item.line;
+          var title = String(item.issueSimple || "Finding");
+          if (title.length > 72) title = title.slice(0, 69) + "…";
+          var active = item.id === currentId ? " is-active" : "";
+          return '<button type="button" class="queue-item' + active + '" data-id="' + escapeText(item.id) + '">' +
+            '<span class="queue-title">' + escapeText(title) + "</span>" +
+            '<span class="queue-file">' + escapeText(loc) + "</span></button>";
+        }).join("");
+    }).join("");
+    host.querySelectorAll(".queue-item").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var id = btn.getAttribute("data-id") || "";
+        var next = queue();
+        for (var i = 0; i < next.length; i += 1) {
+          if (next[i].id === id) {
+            queueIndex = i;
+            paint();
+            return;
+          }
+        }
+      });
+    });
+  }
+
   function paint() {
     clampIndex();
     var q = queue();
@@ -413,6 +467,7 @@ function clientScript(): string {
         " · Resolved " + resolvedCount +
         (f ? " · Card " + (queueIndex + 1) + " / " + q.length : "");
     }
+    renderQueue();
 
     if (!f) {
       if (els.empty) els.empty.hidden = false;
@@ -1598,8 +1653,8 @@ function clientScript(): string {
   document.addEventListener("keydown", function (event) {
     var t = event.target;
     if (t instanceof HTMLTextAreaElement || t instanceof HTMLInputElement || t instanceof HTMLSelectElement) return;
-    if (event.key === "ArrowLeft") { event.preventDefault(); go(-1); }
-    if (event.key === "ArrowRight") { event.preventDefault(); go(1); }
+    if (event.key === "ArrowLeft" || event.key === "k") { event.preventDefault(); go(-1); }
+    if (event.key === "ArrowRight" || event.key === "j") { event.preventDefault(); go(1); }
     if (event.key === "r" || event.key === "R") {
       event.preventDefault();
       var f = current();
@@ -1637,37 +1692,133 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PR #${run.prNumber} — Triage</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
   <style>
     :root {
-      --bg: #1e1e1e;
-      --bg-elevated: #252526;
-      --ink: #d4d4d4;
-      --muted: #a0a0a0;
-      --card: #252526;
-      --line: #3c3c3c;
-      --accent: #3794ff;
-      --accent-hover: #4aa0ff;
-      --code-bg: #1e1e1e;
+      --bg: #121414;
+      --bg-elevated: #1a1c1c;
+      --ink: #e2e2e2;
+      --muted: #bec8d1;
+      --card: #1e2020;
+      --inset: #0d0e0f;
+      --line: #3e4850;
+      --accent: #4fc1ff;
+      --accent-hover: #84cfff;
+      --code-bg: #0d0e0f;
       --comment-bg: #1b3a4b;
       --blocker: #f14c4c;
       --major: #dcdcaa;
       --minor: #9cdcfe;
       --nit: #808080;
       --question: #c586c0;
-      --button-fg: #ffffff;
+      --button-fg: #00344c;
       --copied: #388a34;
       --resolved: #3d7a45;
     }
     * { box-sizing: border-box; }
-    body {
+    ${workspaceChromeCss()}
+    html, body.wb-page {
+      height: 100%;
+      overflow: hidden;
+      color-scheme: dark;
+    }
+    body.wb-page {
       margin: 0;
-      font-family: "Segoe UI", Consolas, ui-sans-serif, system-ui, sans-serif;
+      font-family: "Hanken Grotesk", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+      font-size: 13px;
       color: var(--ink);
       background: var(--bg);
-      line-height: 1.55;
+      line-height: 20px;
     }
-    main { max-width: 920px; margin: 0 auto; padding: 1.75rem 1.15rem 5rem; }
-    h1 { font-size: 1.55rem; margin: 0 0 0.35rem; font-weight: 600; color: #fff; }
+    .wb-body:has(.triage-shell) {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      padding: 0;
+    }
+    .triage-shell {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 248px 1fr;
+      min-height: 0;
+      height: 100%;
+      overflow: hidden;
+    }
+    .queue-pane {
+      border-right: 1px solid var(--line);
+      background: var(--bg-elevated);
+      overflow: auto;
+      padding: 0;
+      min-height: 0;
+    }
+    .queue-head {
+      position: sticky; top: 0; z-index: 2;
+      display: flex; justify-content: space-between; align-items: baseline;
+      padding: 12px 12px 8px;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted);
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--line);
+    }
+    .queue-filters {
+      display: flex; flex-direction: column; gap: 6px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .queue-group {
+      margin: 14px 12px 4px; font-size: 11px; font-weight: 600;
+      letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+    }
+    .queue-group.is-crit { color: var(--blocker); }
+    .queue-item {
+      display: block; width: 100%; text-align: left;
+      background: transparent; border: 0; border-left: 2px solid transparent;
+      color: var(--ink); padding: 8px 12px 10px; cursor: pointer;
+      font: 400 12px/16px "Hanken Grotesk", sans-serif;
+    }
+    .queue-item:hover { background: #282a2b; }
+    .queue-item.is-active { background: #282a2b; border-left-color: var(--accent); }
+    .queue-item .queue-title {
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden; color: #e2e2e2;
+    }
+    .queue-item .queue-file {
+      display: block; margin-top: 3px; color: var(--muted);
+      font: 11px/16px "JetBrains Mono", ui-monospace, monospace;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .triage-stage {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      background-color: var(--bg);
+      background-image: radial-gradient(rgba(255,255,255,0.035) 1px, transparent 1px);
+      background-size: 14px 14px;
+    }
+    .stage-head {
+      flex-shrink: 0;
+      padding: 12px 20px 0;
+      background: var(--bg);
+      border-bottom: 1px solid var(--line);
+    }
+    .stage-title-row { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+    .stage-title-row h1 { font-size: 16px; margin: 0; font-weight: 600; color: #fff; }
+    .stage-title-row .lede { margin: 0; font-size: 12px; }
+    .stage-tools {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+      padding: 8px 0 10px;
+    }
+    .stage-tools #progress-text { font-size: 12px; font-weight: 600; color: var(--muted); }
+    .stage-scroll {
+      flex: 1;
+      overflow: auto;
+      padding: 16px 20px 20px;
+    }
+    main { max-width: 860px; margin: 0; padding: 0; }
     h2 { margin: 0 0 0.35rem; font-size: 1.15rem; font-weight: 600; color: #fff; }
     h3 {
       margin: 1rem 0 0.35rem;
@@ -1678,19 +1829,77 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       font-weight: 600;
     }
     .lede { color: var(--muted); margin: 0 0 1rem; }
-    .nav-links { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; }
-    a { color: var(--accent); }
-    .summary {
-      background: var(--bg-elevated);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 0.9rem 1.1rem;
-      margin-bottom: 1rem;
+    .agent-findings-nav {
       display: flex;
       flex-wrap: wrap;
-      gap: 0.75rem 1.25rem;
-      align-items: center;
+      gap: 0;
+      margin: 0;
+      padding: 0;
+      border-bottom: 0;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0;
+      text-transform: none;
+      color: var(--muted);
     }
+    .agent-findings-nav a, .agent-findings-nav span {
+      color: var(--muted);
+      text-decoration: none;
+      padding: 8px 12px;
+      border-bottom: 2px solid transparent;
+    }
+    .agent-findings-nav a:hover { color: #fff; }
+    .agent-findings-nav a.is-active, .agent-findings-nav span.is-active {
+      color: #fff;
+      border-bottom-color: var(--accent);
+    }
+    .agent-findings-nav { margin: 0; }
+    a { color: var(--accent); }
+    .overview-fold {
+      margin: 0 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--card);
+      padding: 0 12px 4px;
+    }
+    .overview-fold > summary {
+      padding: 10px 0;
+      color: #fff;
+      font-weight: 600;
+      font-size: 13px;
+    }
+    .overview-fold .overview {
+      border: 0;
+      background: transparent;
+      margin: 0;
+      padding: 0 0 12px;
+      display: block;
+    }
+    .overview-fold .overview h2 { display: none; }
+    .overview-fold .overview p, .overview-fold .overview li { color: var(--muted); font-size: 13px; }
+    .verify-fold {
+      margin-left: auto;
+    }
+    .verify-fold > summary {
+      list-style: none;
+      color: var(--accent);
+      font-weight: 600;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .verify-fold > summary::-webkit-details-marker { display: none; }
+    .verify-fold .verify-body {
+      position: absolute;
+      right: 20px;
+      margin-top: 6px;
+      z-index: 5;
+      min-width: 280px;
+      padding: 12px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+    }
+    .stage-tools { position: relative; }
     #progress-text { font-weight: 600; color: #fff; }
     .hint { color: var(--muted); font-size: 0.88rem; }
     #flash, #serve-hint {
@@ -1703,9 +1912,9 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
     #panel {
       background: var(--card);
       border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 1.1rem 1.2rem 1.35rem;
-      border-left: 4px solid var(--minor);
+      border-radius: 4px;
+      padding: 16px;
+      border-left: 3px solid var(--minor);
     }
     #panel:has(#sev-badge[data-severity="blocker"]) { border-left-color: var(--blocker); }
     #panel:has(#sev-badge[data-severity="major"]) { border-left-color: var(--major); }
@@ -1744,7 +1953,7 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
     .teach-section {
       background: #1b2838;
       border: 1px solid #2d4a66;
-      border-radius: 8px;
+      border-radius: 4px;
       padding: 0.85rem 1rem 1rem;
     }
     .teach-head {
@@ -1783,17 +1992,18 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
     }
     #provider-teach {
       min-width: 9rem;
-      background: var(--bg);
+      background: var(--inset);
       color: var(--ink);
       border: 1px solid var(--line);
       border-radius: 4px;
-      padding: 0.35rem 0.5rem;
+      padding: 8px 28px 8px 10px;
+      color-scheme: dark;
     }
     .teach-simple,
     .teach-prose {
       margin-top: 0.35rem;
       white-space: pre-wrap;
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+      font-family: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
       font-size: 0.92rem;
       line-height: 1.55;
       color: var(--ink);
@@ -1824,7 +2034,7 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       border-radius: 6px;
       overflow-x: auto;
       white-space: pre;
-      font-family: Consolas, "Cascadia Code", ui-monospace, monospace;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
       font-size: 0.84rem;
       line-height: 1.4;
     }
@@ -1879,7 +2089,7 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       margin: 0.55rem 0 0.75rem;
     }
     code {
-      font-family: Consolas, "Cascadia Code", ui-monospace, monospace;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
       font-size: 0.9em;
       color: #9cdcfe;
     }
@@ -1922,7 +2132,7 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
     .editor-breadcrumb {
       padding: 0.28rem 0.75rem;
       border-bottom: 1px solid var(--line);
-      font-family: Consolas, "Cascadia Code", ui-monospace, monospace;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
       font-size: 0.78rem;
       color: #cccccc;
       overflow: auto;
@@ -1933,7 +2143,7 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
     .editor-code {
       margin: 0;
       padding: 0.45rem 0;
-      font-family: Consolas, "Cascadia Code", "Fira Code", ui-monospace, monospace;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
       font-size: 0.9rem;
       line-height: 1.65;
       min-width: max-content;
@@ -1969,22 +2179,43 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       background: var(--comment-bg);
       border: 1px solid #2a4a5a;
       border-radius: 6px;
-      font-family: Consolas, "Cascadia Code", ui-monospace, monospace;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
       font-size: 0.9rem;
       line-height: 1.55;
     }
     textarea, select {
       width: 100%;
       margin-top: 0.35rem;
-      background: #1e1e1e;
+      background: var(--inset);
       color: var(--ink);
       border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 0.65rem 0.75rem;
-      font: 0.92rem/1.45 "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+      border-radius: 4px;
+      padding: 10px 12px;
+      font: 13px/20px "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
+      color-scheme: dark;
+      accent-color: var(--accent);
+    }
+    select {
+      width: auto;
+      min-width: 12rem;
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image:
+        linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+        linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+      background-position:
+        calc(100% - 14px) calc(50% - 2px),
+        calc(100% - 9px) calc(50% - 2px);
+      background-size: 5px 5px, 5px 5px;
+      background-repeat: no-repeat;
+      padding-right: 28px;
+    }
+    option, optgroup {
+      background: var(--inset);
+      color: var(--ink);
     }
     textarea { resize: vertical; }
-    select { width: auto; min-width: 12rem; }
     textarea:focus, select:focus {
       outline: none;
       border-color: var(--accent);
@@ -1996,8 +2227,8 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       background: var(--accent);
       color: var(--button-fg);
       border-radius: 4px;
-      padding: 0.45rem 0.85rem;
-      font: 600 0.82rem "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+      padding: 8px 12px;
+      font: 600 12px/16px "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
       cursor: pointer;
     }
     button:hover { background: var(--accent-hover); }
@@ -2008,32 +2239,52 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       cursor: not-allowed;
     }
     button.btn-secondary {
-      background: #2d2d2d;
+      background: transparent;
       border-color: var(--line);
-      color: #d4d4d4;
+      color: var(--ink);
     }
-    button.btn-secondary:hover { background: #3a3a3a; }
+    button.btn-secondary:hover { background: #282a2b; }
+    #panel > section + section,
+    #panel > details + section,
+    #panel > section + details,
+    #panel > details + details {
+      margin-top: 16px;
+    }
+    #panel > header { margin-bottom: 12px; }
     .bottom-nav {
-      position: sticky;
-      bottom: 0;
-      margin-top: 1.25rem;
-      padding: 0.75rem 0;
-      background: linear-gradient(transparent, var(--bg) 28%);
+      flex-shrink: 0;
       display: flex;
       flex-wrap: wrap;
-      gap: 0.5rem;
+      gap: 8px;
       align-items: center;
+      padding: 8px 20px;
+      background: var(--bg-elevated);
+      border-top: 1px solid var(--line);
     }
-    details { margin-top: 0.75rem; }
-    summary {
+    .bottom-nav .kbd-hint { margin-right: auto; color: var(--muted); font-size: 12px; }
+    kbd {
+      display: inline-block; padding: 0 5px; border: 1px solid var(--line);
+      border-radius: 3px; font: 11px "JetBrains Mono", ui-monospace, monospace;
+    }
+    details.block {
+      margin-top: 12px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--bg-elevated);
+      padding: 0 12px 8px;
+    }
+    details.block > summary {
+      padding: 10px 0;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 600;
       cursor: pointer;
-      color: var(--muted);
-      font-size: 0.88rem;
     }
+    summary { cursor: pointer; }
     #empty {
       background: var(--bg-elevated);
       border: 1px dashed var(--line);
-      border-radius: 8px;
+      border-radius: 4px;
       padding: 2rem 1.25rem;
       text-align: center;
       color: var(--muted);
@@ -2056,14 +2307,13 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
     .provider-row label { color: var(--muted); font-size: 0.88rem; }
     #btn-verify { margin: 0; }
     .verify-agents {
-      display: inline-flex;
-      flex-wrap: wrap;
-      gap: 0.45rem 0.75rem;
-      align-items: center;
-      padding: 0.2rem 0.45rem;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: #1e1e1e;
+      display: flex;
+      flex-direction: column;
+      gap: 0.45rem;
+      align-items: flex-start;
+      padding: 0 0 8px;
+      border: 0;
+      background: transparent;
     }
     .verify-agents label {
       display: inline-flex;
@@ -2087,7 +2337,7 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
     .verify-panel {
       background: var(--bg-elevated);
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 4px;
       padding: 0.75rem 0.9rem;
       margin: 0.75rem 0 1rem;
     }
@@ -2104,14 +2354,14 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       border: 1px solid var(--line);
       border-radius: 6px;
       padding: 0.65rem 0.75rem;
-      font: 0.78rem/1.45 Consolas, "Cascadia Code", ui-monospace, monospace;
+      font: 0.78rem/1.45 "JetBrains Mono", ui-monospace, monospace;
       white-space: pre-wrap;
       color: #cccccc;
     }
     .recheck-live-panel {
       background: var(--bg-elevated);
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 4px;
       padding: 0.75rem 0.9rem;
       margin: 0.75rem 0 0;
     }
@@ -2123,7 +2373,7 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
     .recheck-entry {
       background: var(--bg-elevated);
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 4px;
       padding: 0.75rem 0.9rem;
     }
     .recheck-entry.is-latest {
@@ -2159,40 +2409,54 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       border: 1px solid var(--line);
       border-radius: 6px;
       padding: 0.55rem 0.7rem;
-      font: 0.88rem/1.45 Consolas, "Cascadia Code", ui-monospace, monospace;
+      font: 0.88rem/1.45 "JetBrains Mono", ui-monospace, monospace;
       color: #d4d4d4;
     }
   </style>
 </head>
-<body>
+<body class="wb-page">
+  ${workspaceChromeOpenHtml({ prNumber: run.prNumber, active: "triage" })}
+  <div class="triage-shell">
+    <aside class="queue-pane">
+      <div class="queue-head">Queue <span id="queue-count">…</span></div>
+      <div class="queue-filters">
+        <label class="toggle"><input type="checkbox" id="show-resolved" /> Include resolved</label>
+        <label class="toggle"><input type="checkbox" id="show-false-alarms" /> Include false alarms</label>
+      </div>
+      <div id="finding-queue"></div>
+    </aside>
+    <div class="triage-stage">
+      <header class="stage-head">
+        <div class="stage-title-row">
+          <h1>PR #${run.prNumber}</h1>
+          <p class="lede">${escapeHtml(run.title ?? "")}</p>
+        </div>
+        ${agentFindingsNavHtml(run, escapeHtml)}
+        <div class="stage-tools">
+          <span id="progress-text">…</span>
+          <details class="verify-fold">
+            <summary>Verify updates</summary>
+            <div class="verify-body">
+              <div class="verify-agents" id="verify-agents" aria-label="Agents for verify"></div>
+              <button type="button" id="btn-verify" disabled>Verify author updates</button>
+              <section id="verify-panel" class="verify-panel" hidden>
+                <p id="verify-status" class="verify-status"></p>
+                <p id="verify-live" class="hint" hidden></p>
+                <pre id="verify-logs" class="verify-logs" aria-live="polite"></pre>
+              </section>
+            </div>
+          </details>
+        </div>
+      </header>
+      <div class="stage-scroll">
   <main>
-    <h1>PR #${run.prNumber} — Triage</h1>
-    <p class="lede">${escapeHtml(run.title ?? "")} · one finding at a time (critical → lower)</p>
-    <div class="nav-links">
-      <a href="/">← Home</a>
-      <a href="final-review.html">Open list view</a>
-      <a href="verify-report.html" id="verify-report-link">Verify report</a>
-      <div class="verify-agents" id="verify-agents" aria-label="Agents for verify"></div>
-      <button type="button" id="btn-verify" disabled>Verify author updates</button>
-      <label class="toggle"><input type="checkbox" id="show-resolved" /> Include resolved</label>
-      <label class="toggle"><input type="checkbox" id="show-false-alarms" /> Include false alarms</label>
-    </div>
-    ${run.overview ? renderOverviewHtml(run.overview, escapeHtml) : ""}
-    <section class="summary">
-      <span id="progress-text">…</span>
-      <span class="hint">← → navigate · R resolve · false alarms stay on disk</span>
-    </section>
+    ${run.overview ? `<details class="overview-fold"><summary>PR overview</summary>${renderOverviewHtml(run.overview, escapeHtml)}</details>` : ""}
     <p id="serve-hint" hidden></p>
-    <section id="verify-panel" class="verify-panel" hidden>
-      <p id="verify-status" class="verify-status"></p>
-      <p id="verify-live" class="hint" hidden></p>
-      <pre id="verify-logs" class="verify-logs" aria-live="polite"></pre>
-    </section>
     <p id="flash" hidden></p>
 
     <div id="empty" hidden>
       <p>All caught up — nothing left in the open queue.</p>
-      <p class="hint">Toggle “Include false alarms” or “Include resolved” to revisit.</p>
+      <p class="hint">Toggle “Include false alarms” or “Include resolved” in the queue to revisit.</p>
     </div>
 
     <article id="panel" hidden>
@@ -2201,41 +2465,42 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
         <span class="badge badge-fa" id="fa-badge" hidden>False alarm</span>
         <h2 id="finding-title">Finding</h2>
         <p class="meta" id="finding-meta"></p>
-        <div class="toolbar" style="margin-top:0.65rem">
-          <button type="button" id="btn-copy-agent-top">Copy for agent</button>
-        </div>
       </header>
 
       <section>
-        <h3>Issue (simple)</h3>
+        <h3>Issue</h3>
         <p id="issue-simple"></p>
-      </section>
-
-      <section class="teach-section">
-        <div class="teach-head">
-          <h3>Explain simply</h3>
-          <button type="button" id="btn-copy-teach">Copy lesson</button>
-        </div>
-        <p class="hint">A plain walkthrough of this finding. <strong>Teach me</strong> runs one AI agent for a deep teammate-style lesson (line-by-line with sample inputs/outputs) + human PR comment, then saves it in Recheck history. <strong>Copy lesson</strong> copies the markdown (not the editor chrome).</p>
-        <div id="teach-simple" class="teach-simple"></div>
-        <div class="toolbar teach-actions" style="margin-top:0.5rem">
-          <label for="provider-teach" class="teach-provider-label">Agent</label>
-          <select id="provider-teach" aria-label="Teach me agent"></select>
-          <button type="button" id="btn-teach-me" disabled>Teach me</button>
-          <button type="button" class="btn-secondary" id="btn-copy-teach-bottom">Copy lesson</button>
-        </div>
-        <p class="hint" style="margin-top:0.4rem">Same list as Recheck below — pick cursor, claude-code, or command-code. One agent per Teach me (not all at once yet).</p>
       </section>
 
       <section>
         <h3>Current code</h3>
         <div class="toolbar">
           <button type="button" class="btn-secondary" id="btn-copy-current-code">Copy code</button>
+          <button type="button" class="btn-secondary" id="btn-copy-agent-top">Copy for agent</button>
         </div>
         <div class="editor-host" id="current-code"></div>
       </section>
 
-      <details>
+      <section>
+        <div class="suggest-head">
+          <h3>Suggested comment</h3>
+          <div class="toolbar">
+            <button type="button" class="btn-secondary" id="btn-reset-comment">Reset</button>
+            <button type="button" class="btn-secondary" id="btn-copy-comment">Copy</button>
+            <button type="button" id="btn-save-comment">Save</button>
+          </div>
+        </div>
+        <textarea id="simple-comment" rows="5" placeholder="Short polite comment…"></textarea>
+        <details>
+          <summary>Original generated comment</summary>
+          <div class="toolbar">
+            <button type="button" class="btn-secondary" id="btn-copy-original">Copy original</button>
+          </div>
+          <pre class="comment-body" id="original-comment"></pre>
+        </details>
+      </section>
+
+      <details class="block">
         <summary>Details (why / fix / better code)</summary>
         <section>
           <h3>Why this is weak</h3>
@@ -2254,34 +2519,35 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
         </section>
       </details>
 
-      <section>
-        <h3>Your paste comment (keep it short)</h3>
-        <p class="hint">Edit into the simple GitHub comment you want. Synced with the list page in this browser.</p>
-        <textarea id="simple-comment" rows="4" placeholder="Short polite comment…"></textarea>
-        <div class="toolbar">
-          <button type="button" id="btn-save-comment">Save comment</button>
-          <button type="button" id="btn-copy-comment">Copy comment</button>
-          <button type="button" class="btn-secondary" id="btn-reset-comment">Reset to original</button>
+      <details class="block">
+        <summary>Teach me (Generate lesson)</summary>
+        <section class="teach-section">
+        <div class="teach-head">
+          <h3>Explain simply</h3>
+          <button type="button" id="btn-copy-teach">Copy lesson</button>
         </div>
-        <details>
-          <summary>Original generated comment</summary>
-          <div class="toolbar">
-            <button type="button" class="btn-secondary" id="btn-copy-original">Copy original</button>
-          </div>
-          <pre class="comment-body" id="original-comment"></pre>
-        </details>
-      </section>
+        <p class="hint">A plain walkthrough of this finding. Teach me runs one agent for a teammate-style lesson, then saves it in Recheck history.</p>
+        <div id="teach-simple" class="teach-simple"></div>
+        <div class="toolbar teach-actions" style="margin-top:0.5rem">
+          <label for="provider-teach" class="teach-provider-label">Agent</label>
+          <select id="provider-teach" aria-label="Teach me agent"></select>
+          <button type="button" id="btn-teach-me" disabled>Teach me</button>
+          <button type="button" class="btn-secondary" id="btn-copy-teach-bottom">Copy lesson</button>
+        </div>
+        </section>
+      </details>
 
+      <details class="block" open>
+        <summary>Recheck (Ask follow-up)</summary>
       <section>
-        <h3>Ask a recheck</h3>
-        <p class="hint">Want a plain lesson? Use <strong>Teach me</strong> above. Or type your own question and hit Recheck. Finished answers land in <strong>Recheck history</strong> (Teach me steps first). Use <strong>Copy</strong> on a suggestion for GitHub.</p>
-        <textarea id="notes" rows="4" placeholder="e.g. Also enforce this check on submit, not only in the UI — should the comment sit on line 23?"></textarea>
+        <p class="hint">Ask a follow-up. Answers land in Recheck history.</p>
+        <textarea id="notes" rows="3" placeholder="e.g., Does wrapping it in db.transaction() solve this entirely?"></textarea>
         <div class="provider-row">
           <label for="provider">Provider</label>
           <select id="provider" aria-label="Provider">
             <option value="">Loading…</option>
           </select>
-          <button type="button" id="btn-recheck" disabled>Recheck</button>
+          <button type="button" id="btn-recheck" disabled>Ask</button>
           <button type="button" class="btn-secondary" id="btn-copy-notes">Copy notes</button>
         </div>
         <div id="recheck-live-panel" class="recheck-live-panel" hidden>
@@ -2290,22 +2556,29 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
           <p id="recheck-live" class="hint" hidden></p>
           <pre id="recheck-logs" class="recheck-logs" aria-live="polite"></pre>
         </div>
-        <h3>Recheck history</h3>
-        <p class="hint" style="margin-top:0">Newest first. One card per Recheck you ran.</p>
-        <div id="recheck-history"></div>
       </section>
+      </details>
+      <details class="block">
+        <summary>Recheck history</summary>
+        <p class="hint" style="margin-top:0">Newest first.</p>
+        <div id="recheck-history"></div>
+      </details>
     </article>
-
-    <nav class="bottom-nav" aria-label="Triage navigation">
-      <button type="button" class="btn-secondary" id="btn-back">Back</button>
-      <button type="button" class="btn-secondary" id="btn-next">Next</button>
-      <button type="button" id="btn-copy-agent">Copy for agent</button>
-      <button type="button" id="btn-resolve">Resolved</button>
-      <button type="button" class="btn-secondary" id="btn-restore" hidden>Restore</button>
-      <button type="button" class="btn-secondary" id="btn-false-alarm" hidden>False alarm</button>
-      <button type="button" class="btn-secondary" id="btn-reopen" hidden>Reopen</button>
-    </nav>
   </main>
+      </div>
+    <nav class="bottom-nav" aria-label="Triage navigation">
+      <span class="kbd-hint"><kbd>j</kbd> <kbd>k</kbd> navigate · <kbd>R</kbd> resolve</span>
+      <button type="button" class="btn-secondary" id="btn-back">Back</button>
+      <button type="button" class="btn-secondary" id="btn-false-alarm" hidden>False Alarm</button>
+      <button type="button" class="btn-secondary" id="btn-copy-agent">Copy for agent</button>
+      <button type="button" class="btn-secondary" id="btn-restore" hidden>Restore</button>
+      <button type="button" class="btn-secondary" id="btn-reopen" hidden>Reopen</button>
+      <button type="button" class="btn-secondary" id="btn-resolve">Resolved</button>
+      <button type="button" id="btn-next">Next finding →</button>
+    </nav>
+    </div>
+  </div>
+  ${workspaceChromeCloseHtml()}
   <script>window.__TRIAGE__ = ${embedJson(payload)};</script>
   ${clientScript()}
 </body>

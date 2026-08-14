@@ -8,6 +8,7 @@ export function isFatalProviderError(message: string): boolean {
     /\b(out of credits?|no credits?|insufficient credits?)\b/.test(m) ||
     /\b(quota|billing|payment required|payment_required)\b/.test(m) ||
     /\b(usage limit|rate limit|ratelimit|too many requests)\b/.test(m) ||
+    /\b(session limit|hit your session limit)\b/.test(m) ||
     /\b(subscription|plan limit|upgrade your plan)\b/.test(m) ||
     /\b(unauthorized|forbidden|invalid api key|authentication)\b/.test(m) ||
     /\b(402|429)\b/.test(m) ||
