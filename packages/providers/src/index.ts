@@ -21,7 +21,10 @@ export {
   execOptionsForSpec,
 } from "./cli-agents.js";
 export type { CliAgentSpec, PromptStyle } from "./cli-agents.js";
-export { parseFindingsFromModelText } from "./parse-findings.js";
+export {
+  parseFindingsFromModelText,
+  normalizeFindingCandidate,
+} from "./parse-findings.js";
 export { buildReviewUserPrompt } from "./build-prompt.js";
 export {
   killActiveCliChildren,
@@ -33,6 +36,7 @@ export {
   assertPrintModeCliOutput,
   stripHeadlessCliBanners,
   extractHeadlessJsonFinalText,
+  writePassRawOutput,
 } from "./run-cli.js";
 export {
   generatePrOverview,

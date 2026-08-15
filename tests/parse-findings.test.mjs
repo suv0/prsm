@@ -169,3 +169,67 @@ test("throws when JSON objects are not findings", () => {
     /not findings/i,
   );
 });
+
+test("accepts findings when models set null on defaulted fields", () => {
+  const slim = {
+    kind: "issue",
+    file: "apps/seller/lib/kyc-identity.ts",
+    line: 7,
+    endLine: null,
+    severity: "blocker",
+    category: "documentation",
+    confidence: 0.95,
+    importance: 9,
+    currentCode: "export const x = 1;",
+    issueSimple: "Missing docs for KYC helper",
+    whyWeak: "Callers cannot tell which errors are retryable",
+    howToFix: "Document retryable errors in the module comment",
+    betterCode: "/** Retryable KYC errors… */\nexport const x = 1;",
+    reviewComment: "Could we document which KYC errors are retryable here?",
+    evidence: null,
+    views: null,
+    verifications: null,
+    rechecks: null,
+    githubCommentTarget: null,
+    language: null,
+  };
+  const findings = parseFindingsFromModelText(JSON.stringify([slim]), {
+    passId: "nitpick",
+    provider: "cursor",
+  });
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0]?.file, "apps/seller/lib/kyc-identity.ts");
+  assert.equal(findings[0]?.severity, "blocker");
+  assert.equal(findings[0]?.disposition, "open");
+});
+
+test("coerces stringy numbers and alias field names from CLIs", () => {
+  const loose = {
+    kind: "issue",
+    file: "apps/seller/components/kyc-identity/sumsub-websdk-frame.tsx",
+    line: "1",
+    severity: "blocker",
+    category: "process",
+    confidence: "95",
+    importance: "8.6",
+    title: "SDK frame mounts without a token gate",
+    description: "The WebSDK can start before remint finishes",
+    recommendation: "Gate mount on a ready token",
+    code: "<SumsubWebSdk />",
+    suggestedCode: "{token ? <SumsubWebSdk /> : null}",
+    comment: "Could we wait for the reminted token before mounting Sumsub?",
+    evidence: [{ quote: "", file: "x.ts" }, { quote: "<SumsubWebSdk />" }],
+    githubCommentTarget: { target: "file", reason: "whole file" },
+  };
+  const findings = parseFindingsFromModelText(JSON.stringify([loose]), {
+    passId: "correctness",
+    provider: "cursor",
+  });
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0]?.line, 1);
+  assert.equal(findings[0]?.confidence, 0.95);
+  assert.equal(findings[0]?.importance, 9);
+  assert.equal(findings[0]?.issueSimple, "SDK frame mounts without a token gate");
+  assert.equal(findings[0]?.githubCommentTarget.target, "line");
+  assert.equal(findings[0]?.evidence.length, 1);
+});

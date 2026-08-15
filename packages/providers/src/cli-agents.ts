@@ -11,6 +11,7 @@ import {
   createCliLogBridge,
   execCli,
   writePassPromptFile,
+  writePassRawOutput,
   type ExecCliOptions,
 } from "./run-cli.js";
 
@@ -252,10 +253,21 @@ export class GenericCliProvider implements Provider {
 
     assertPrintModeCliOutput(result.stdout, this.spec.command);
 
-    const findings = parseFindingsFromModelText(result.stdout, {
-      passId: request.passId,
-      provider: this.id,
-    });
+    let findings;
+    try {
+      findings = parseFindingsFromModelText(result.stdout, {
+        passId: request.passId,
+        provider: this.id,
+      });
+    } catch (error) {
+      const rawPath = await writePassRawOutput(
+        outputDir,
+        request.passId,
+        result.stdout,
+      );
+      request.context.log?.(`  · wrote raw CLI output: ${rawPath}`);
+      throw error;
+    }
 
     return {
       provider: this.id,

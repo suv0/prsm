@@ -651,6 +651,19 @@ export async function writePassPromptFile(
   return promptPath;
 }
 
+/** Persist CLI stdout when findings parse fails (for later debugging). */
+export async function writePassRawOutput(
+  outputDir: string,
+  passId: string,
+  rawText: string,
+): Promise<string> {
+  const agentDir = path.join(outputDir, "agent");
+  await mkdir(agentDir, { recursive: true });
+  const rawPath = path.join(agentDir, `${passId}.raw.txt`);
+  await writeFile(rawPath, rawText, "utf8");
+  return rawPath;
+}
+
 export function buildCliReviewInstruction(promptPath: string): string {
   return [
     "You are a specialist reviewer in the PRism pipeline.",

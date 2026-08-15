@@ -11,6 +11,7 @@ import {
   createCliLogBridge,
   execCli,
   writePassPromptFile,
+  writePassRawOutput,
 } from "./run-cli.js";
 import { buildCliArgs, execOptionsForSpec, resolveCliSpec } from "./cli-agents.js";
 
@@ -56,10 +57,21 @@ export class CursorAgentProvider implements Provider {
 
     assertPrintModeCliOutput(result.stdout, "agent");
 
-    const findings = parseFindingsFromModelText(result.stdout, {
-      passId: request.passId,
-      provider: this.id,
-    });
+    let findings;
+    try {
+      findings = parseFindingsFromModelText(result.stdout, {
+        passId: request.passId,
+        provider: this.id,
+      });
+    } catch (error) {
+      const rawPath = await writePassRawOutput(
+        outputDir,
+        request.passId,
+        result.stdout,
+      );
+      request.context.log?.(`  · wrote raw CLI output: ${rawPath}`);
+      throw error;
+    }
 
     return {
       provider: this.id,

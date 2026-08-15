@@ -211,6 +211,7 @@ reviews/<n>/
 | Private PR 404 / GitHub errors | Hub → **Connect GitHub** (paste a `repo` token), or `gh auth login` |
 | Provider missing | Install CLI; `pnpm prsm --doctor` / `--list-providers` |
 | Claude “What would you like to work on?” / parse findings JSON fails | Windows was mangling long `-p "…"` prompts under `shell: true`. PRism now pipes the Claude prompt on stdin (bare `-p`) and quotes argv for other CLIs. Restart the hub after upgrading. |
+| CLI returned JSON that is not findings | The agent printed finding-shaped JSON that failed schema checks (often `null` on defaulted fields, stringy numbers, or alias names like `title`/`comment`). PRism now normalizes those shapes; on hard failure it writes `agent/<pass>.raw.txt` for debugging. Restart the hub after upgrading. |
 | Claude “no stdin data received in 3s” | Only happens if stdin is a pipe with no data. PRism either ignores stdin or writes the full prompt then closes it. Restart the hub after upgrading. |
 | Cursor `Error: [unavailable]` | Transient Cursor API; re-run that agent, or rely on others |
 | JSON / Teach me looks like raw JSON | Recheck again on current PRism (lesson is recovered from dumps) |
