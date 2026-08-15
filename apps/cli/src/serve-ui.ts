@@ -15,7 +15,17 @@ import {
   saveGithubToken,
 } from "@review-os/github";
 import { readFile, access } from "node:fs/promises";
-import { renderReviewFromDir, renderVerifyPlaceholderHtml } from "@review-os/render";
+import {
+  ICON_INNER,
+  iconHtml,
+  iconTextHtml,
+  renderReviewFromDir,
+  renderVerifyPlaceholderHtml,
+  sidebarChromeCss,
+  sidebarToggleButtonHtml,
+  sidebarToggleScript,
+  workspaceChromeHeadHtml,
+} from "@review-os/render";
 import {
   DEFAULT_MULTI_AGENTS,
   runAllCliAgents,
@@ -185,6 +195,7 @@ function homePage(port: number): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  ${workspaceChromeHeadHtml()}
   <title>PRism</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -208,7 +219,6 @@ function homePage(port: number): string {
       --cursor: #4fc1ff;
       --claude: #e9a97d;
       --command: #cda7ff;
-      --sidebar: 260px;
       --radius: 4px;
     }
     * { box-sizing: border-box; }
@@ -224,8 +234,9 @@ function homePage(port: number): string {
     }
     .app {
       display: grid;
-      grid-template-columns: var(--sidebar) 1fr;
+      grid-template-columns: var(--sidebar-current) 1fr;
       min-height: 100%;
+      transition: grid-template-columns 0.18s ease;
     }
     .sidebar {
       background: var(--surface);
@@ -233,6 +244,8 @@ function homePage(port: number): string {
       padding: 12px 0 0;
       display: flex;
       flex-direction: column;
+      min-width: 0;
+      overflow: hidden;
     }
     .brand-row {
       display: flex;
@@ -281,6 +294,9 @@ function homePage(port: number): string {
       color: #fff;
     }
     .nav-ico { width: 16px; opacity: 0.8; }
+    .statusbar span { display: inline-flex; align-items: center; gap: 6px; }
+    .reviews-head > div { display: flex; flex-wrap: wrap; gap: 8px; }
+    #links a { display: inline-flex; align-items: center; gap: 6px; }
     .sidebar-foot {
       margin-top: auto;
       border-top: 1px solid var(--line);
@@ -314,6 +330,9 @@ function homePage(port: number): string {
       font-weight: 600;
       color: #fff;
       white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
     }
     .ws-tabs {
       display: flex;
@@ -562,7 +581,7 @@ function homePage(port: number): string {
     .pass-chip.error { color: #f14c4c; border-color: #8b2e2e; background: #2a1818; }
     .progress-label { margin: 0.35rem 0 0; font-size: 0.8rem; color: var(--muted); }
     .progress-links { margin: 0.35rem 0 0; font-size: 0.8rem; }
-    .progress-links a { color: var(--accent); }
+    .progress-links a { color: var(--accent); display: inline-flex; align-items: center; gap: 4px; }
     .logs {
       margin: 8px 0 0;
       max-height: 22rem;
@@ -793,6 +812,9 @@ function homePage(port: number): string {
       padding: 4px 8px;
       font-size: 12px;
       flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
     }
     .review-table .findings-cell { font-family: "Hanken Grotesk", sans-serif; font-size: 13px; }
     .review-table .findings-cell.is-block { color: var(--bad); font-weight: 600; }
@@ -823,7 +845,7 @@ function homePage(port: number): string {
       color: var(--muted); font-size: 13px; margin: 0;
     }
     .metric-row {
-      display: flex; justify-content: space-between; gap: 8px;
+      display: flex; justify-content: space-between; align-items: center; gap: 8px;
       padding: 8px 0; border-bottom: 1px solid var(--line);
       font-size: 13px;
     }
@@ -888,7 +910,7 @@ function homePage(port: number): string {
     .agent-pick strong { display: block; color: #fff; font-size: 13px; }
     .agent-pick .pick-desc { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
     .agent-pick .setup-link {
-      display: inline; background: none; border: 0; color: var(--accent);
+      display: inline-flex; align-items: center; gap: 4px; background: none; border: 0; color: var(--accent);
       font: 600 11px "Hanken Grotesk", sans-serif; padding: 0; cursor: pointer;
     }
     .agent-pick .setup-link:hover { background: none; text-decoration: underline; }
@@ -913,7 +935,7 @@ function homePage(port: number): string {
     .factory-card.ag-command { border-top-color: var(--command); }
     .factory-card.is-filter { outline: 1px solid var(--accent); }
     .factory-top { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
-    .factory-name { font-weight: 700; color: #fff; letter-spacing: 0.04em; font-size: 12px; }
+    .factory-name { font-weight: 700; color: #fff; letter-spacing: 0.04em; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
     .pass-stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin: 10px 0; }
     .pass-stat {
       border: 1px solid var(--line); border-radius: var(--radius); padding: 6px;
@@ -932,52 +954,55 @@ function homePage(port: number): string {
       cursor: pointer; padding: 8px 12px; font-weight: 600; color: #fff;
     }
     .console-stream .logs { margin: 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; }
+    ${sidebarChromeCss()}
+    button.nav-item { justify-content: var(--sidebar-justify, flex-start); }
   </style>
 </head>
 <body>
   <div class="app">
-    <aside class="sidebar">
+    <aside class="sidebar hub-sidebar" id="hub-sidebar">
       <div class="brand-row">
         <div class="logo-mark">P</div>
-        <div>
+        <div class="brand-copy">
           <div class="brand">PRism</div>
           <p class="brand-sub">Local Review Desk</p>
         </div>
+        ${sidebarToggleButtonHtml()}
       </div>
       <nav>
-        <button type="button" class="nav-item is-active" data-nav="inbox">Home</button>
-        <button type="button" class="nav-item" data-nav="run">New Review</button>
-        <button type="button" class="nav-item" data-nav="settings">Settings</button>
+        <button type="button" class="nav-item is-active" data-nav="inbox" title="Home" aria-label="Home">${iconTextHtml("home", "Home", "nav-label")}</button>
+        <button type="button" class="nav-item" data-nav="run" title="New Review" aria-label="New Review">${iconTextHtml("plus", "New Review", "nav-label")}</button>
+        <button type="button" class="nav-item" data-nav="settings" title="Settings" aria-label="Settings">${iconTextHtml("settings", "Settings", "nav-label")}</button>
       </nav>
       <div class="sidebar-foot">
-        <button type="button" class="nav-item" data-nav="live" id="sidebar-status">Status</button>
+        <button type="button" class="nav-item" data-nav="live" id="sidebar-status" title="Status" aria-label="Status">${iconTextHtml("activity", "Status", "nav-label")}</button>
       </div>
     </aside>
     <div class="stage">
       <header class="topbar">
-        <p class="ws-title">PRism Workspace</p>
+        <p class="ws-title">${iconHtml("layers")} PRism Workspace</p>
         <nav class="ws-tabs" aria-label="Workspace">
-          <button type="button" data-nav="live" id="tab-live">Live run</button>
-          <a href="#" id="tab-triage" class="is-off">Triage</a>
-          <a href="#" id="tab-list" class="is-off">List</a>
-          <a href="#" id="tab-verify" class="is-off">Verify</a>
+          <button type="button" data-nav="live" id="tab-live" class="has-ico">${iconTextHtml("zap", "Live run")}</button>
+          <a href="#" id="tab-triage" class="is-off has-ico">${iconTextHtml("list-checks", "Triage")}</a>
+          <a href="#" id="tab-list" class="is-off has-ico">${iconTextHtml("list", "List")}</a>
+          <a href="#" id="tab-verify" class="is-off has-ico">${iconTextHtml("shield-check", "Verify")}</a>
         </nav>
         <div class="ws-utils">
-          <span class="pill warn" id="github-pill">GitHub…</span>
-          <span class="pill warn" id="connect-pill">Agents…</span>
+          <span class="pill warn" id="github-pill">${iconHtml("github")}<span class="pill-label">GitHub…</span></span>
+          <span class="pill warn" id="connect-pill">${iconHtml("bot")}<span class="pill-label">Agents…</span></span>
         </div>
       </header>
       <div class="stage-body">
 
     <section class="view" data-view="inbox">
-      <h2 class="display">Your reviews</h2>
+      <h2 class="display">${iconHtml("inbox")} Your reviews</h2>
       <p class="lede">Inbox of past reviews</p>
       <div class="card" id="reviews-card">
       <div class="reviews-head">
-        <p class="section-label">PRs on this machine</p>
+        <p class="section-label">${iconHtml("folder")} PRs on this machine</p>
         <div>
-          <button type="button" id="btn-new-review">New review</button>
-          <button type="button" class="btn-secondary" id="btn-refresh-reviews">Refresh</button>
+          <button type="button" id="btn-new-review" class="has-ico">${iconTextHtml("plus", "New review")}</button>
+          <button type="button" class="btn-secondary has-ico" id="btn-refresh-reviews">${iconTextHtml("refresh", "Refresh")}</button>
         </div>
       </div>
       <p id="reviews-empty" hidden>No local reviews yet. Start a New review.</p>
@@ -990,24 +1015,24 @@ function homePage(port: number): string {
       </div>
       <div class="dash-split">
         <div class="dash-box" id="activity-box">
-          <p class="section-label">Activity context</p>
+          <p class="section-label">${iconHtml("activity")} Activity context</p>
           <p class="activity-empty" id="activity-empty">Select a review row above to view dense analytics and activity streams</p>
           <div id="activity-detail" hidden></div>
         </div>
         <div class="dash-box">
-          <p class="section-label">Metrics</p>
-          <div class="metric-row">Open findings <span class="val" id="metric-open">0</span></div>
-          <div class="metric-row">Pending blockers <span class="val bad" id="metric-blockers">0</span></div>
+          <p class="section-label">${iconHtml("layers")} Metrics</p>
+          <div class="metric-row">${iconHtml("inbox")} Open findings <span class="val" id="metric-open">0</span></div>
+          <div class="metric-row">${iconHtml("alert-triangle")} Pending blockers <span class="val bad" id="metric-blockers">0</span></div>
         </div>
       </div>
     </section>
 
     <section class="view" data-view="settings" hidden>
-      <h2 class="display">Settings</h2>
+      <h2 class="display">${iconHtml("settings")} Settings</h2>
       <p class="lede">Setup only. GitHub is for private repos. Agents are CLIs already installed on this computer.</p>
     <section class="card" id="github-connect">
       <div class="connect-head">
-        <h2>GitHub access</h2>
+        <h2>${iconHtml("github")} GitHub access</h2>
       </div>
       <p id="github-banner" class="need">Checking GitHub access…</p>
       <p class="hint">Public pull requests work with no login. Private repos need a token (saved in ~/.prsm, not git) or the GitHub CLI.</p>
@@ -1015,8 +1040,8 @@ function homePage(port: number): string {
         <label>Personal access token
           <input id="github-token" type="password" name="token" autocomplete="off" placeholder="ghp_… or github_pat_…" />
         </label>
-        <button type="submit" class="btn-secondary" id="btn-github-save">Save token</button>
-        <button type="button" class="btn-secondary" id="btn-github-clear" hidden>Disconnect</button>
+        <button type="submit" class="btn-secondary has-ico" id="btn-github-save">${iconTextHtml("save", "Save token")}</button>
+        <button type="button" class="btn-secondary has-ico" id="btn-github-clear" hidden>${iconTextHtml("unplug", "Disconnect")}</button>
       </form>
       <p class="hint" style="margin:0.45rem 0 0">Create a token with repo read access:
         <a href="https://github.com/settings/tokens/new?description=PRism&amp;scopes=repo" target="_blank" rel="noopener">github.com/settings/tokens/new</a>
@@ -1026,13 +1051,13 @@ function homePage(port: number): string {
 
     <section class="card" id="connect">
       <div class="connect-head">
-        <h2>AI agents</h2>
-        <button type="button" class="btn-secondary" id="btn-recheck">Re-check</button>
+        <h2>${iconHtml("bot")} AI agents</h2>
+        <button type="button" class="btn-secondary has-ico" id="btn-recheck">${iconTextHtml("refresh", "Re-check")}</button>
       </div>
       <p id="connect-banner" class="need">Looking for local agent CLIs…</p>
       <div class="agent-grid" id="agent-grid"></div>
       <details class="add-agent" id="add-agent">
-        <summary>Add your own agent</summary>
+        <summary>${iconHtml("user-plus")} Add your own agent</summary>
         <p class="hint">For CLIs that are <strong>not</strong> already listed above (Cursor, Claude Code, Command Code are built-in). Install the product, then put the <em>terminal program name</em> here. Saved in ~/.prsm, not git.</p>
         <form id="add-agent-form" class="fields">
           <label>Name
@@ -1052,7 +1077,7 @@ function homePage(port: number): string {
             <span>Pass the prompt as <code>-p</code> (keep on for Codex / Gemini-style CLIs). Uncheck if the docs show the prompt as the last argument (Aider-style).</span>
           </label>
           <div class="span-2">
-            <button type="submit" class="btn-secondary" id="btn-add-agent">Add agent</button>
+            <button type="submit" class="btn-secondary has-ico" id="btn-add-agent">${iconTextHtml("plus", "Add agent")}</button>
           </div>
         </form>
         <p id="add-agent-msg" class="hint"></p>
@@ -1062,28 +1087,28 @@ function homePage(port: number): string {
     </section>
 
     <section class="view" data-view="run" hidden>
-    <h2 class="display">New review setup wizard</h2>
+    <h2 class="display">${iconHtml("plus")} New review setup wizard</h2>
     <p class="lede">Configure automated agents to review a specific pull request.</p>
     <form id="form">
       <div class="step">
-        <p class="step-head"><span class="step-num">1</span> Repository context</p>
+        <p class="step-head">${iconHtml("link")}<span class="step-num">1</span> Repository context</p>
         <label for="pr">GitHub PR URL
           <input id="pr" name="pr" type="url" required placeholder="https://github.com/org/repo/pull/123" autocomplete="off" />
         </label>
         <p class="hint" style="margin:8px 0 0">Paste the URL and continue — the review job loads the PR when it starts. Private repos need Settings → Connect GitHub.</p>
       </div>
       <div class="step">
-        <p class="step-head"><span class="step-num">2</span> Select agents</p>
+        <p class="step-head">${iconHtml("bot")}<span class="step-num">2</span> Select agents</p>
         <div class="agent-picks" id="agent-checks"></div>
       </div>
       <div class="step">
-        <p class="step-head"><span class="step-num">3</span> Review options</p>
+        <p class="step-head">${iconHtml("sliders")}<span class="step-num">3</span> Review options</p>
         <details>
           <summary>Review instructions (optional)</summary>
           <p class="hint" style="margin:8px 0">Editable. Sent to every agent on the next Run. Defaults are naming-in-context + hard-review lenses. Clear the box for built-in prompts only. Saved in this browser.</p>
           <textarea id="extra-instructions" name="extra-instructions" spellcheck="true" rows="12"></textarea>
           <div class="instr-toolbar">
-            <button type="button" class="btn-secondary" id="btn-reset-instructions">Reset to default</button>
+            <button type="button" class="btn-secondary has-ico" id="btn-reset-instructions">${iconTextHtml("rotate-ccw", "Reset to default")}</button>
           </div>
         </details>
         <div class="rule-toggles" style="margin-top:12px">
@@ -1095,7 +1120,7 @@ function homePage(port: number): string {
         </div>
       </div>
       <div class="run-row">
-        <button type="submit" id="submit">Run Review</button>
+        <button type="submit" id="submit" class="has-ico">${iconTextHtml("play", "Run Review")}</button>
       </div>
     </form>
     </section>
@@ -1110,8 +1135,8 @@ function homePage(port: number): string {
           <p class="job-meta" id="job-meta"></p>
         </div>
         <div class="job-actions">
-          <button type="button" class="danger" id="btn-stop" hidden>Force stop</button>
-          <button type="button" class="btn-secondary" id="btn-restart" hidden>Restart</button>
+          <button type="button" class="danger has-ico" id="btn-stop" hidden>${iconTextHtml("square", "Force stop")}</button>
+          <button type="button" class="btn-secondary has-ico" id="btn-restart" hidden>${iconTextHtml("rotate-cw", "Restart")}</button>
         </div>
       </div>
       <div id="links"></div>
@@ -1119,7 +1144,7 @@ function homePage(port: number): string {
       <p id="log-filter-hint" class="log-filter-hint" hidden></p>
       <ul class="results" id="results"></ul>
       <details class="console-stream" open>
-        <summary>Multi-Agent Console Stream</summary>
+        <summary>${iconHtml("activity")} Multi-Agent Console Stream</summary>
         <div id="logs" class="logs"></div>
       </details>
     </section>
@@ -1127,14 +1152,34 @@ function homePage(port: number): string {
 
       </div>
       <footer class="statusbar">
-        <span id="statusbar-ok">System Operational</span>
-        <span id="statusbar-mid">localhost</span>
-        <span id="statusbar-right">hub :${port}</span>
+        <span id="statusbar-ok">${iconHtml("check")}<span class="bar-label">System Operational</span></span>
+        <span id="statusbar-mid">${iconHtml("bot")}<span class="bar-label">localhost</span></span>
+        <span id="statusbar-right">${iconHtml("zap")}<span class="bar-label">hub :${port}</span></span>
       </footer>
     </div>
   </div>
+  <script>${sidebarToggleScript()}</script>
   <script>
 (function () {
+  var ICO = ${JSON.stringify(ICON_INNER)};
+  function ico(name) {
+    return '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      (ICO[name] || "") + "</svg>";
+  }
+  function setLabeled(el, text) {
+    if (!el) return;
+    var lab = el.querySelector(".btn-label, .pill-label, .bar-label, .nav-label");
+    if (lab) lab.textContent = text;
+    else el.textContent = text;
+  }
+  function fillIconLabel(el, iconName, text, labelClass) {
+    if (!el) return;
+    el.classList.add("has-ico");
+    el.innerHTML = ico(iconName) + '<span class="' + (labelClass || "btn-label") + '"></span>';
+    var span = el.querySelector("span");
+    if (span) span.textContent = text;
+  }
+
   const form = document.getElementById("form");
   const submit = document.getElementById("submit");
   const panel = document.getElementById("job-panel");
@@ -1322,7 +1367,7 @@ function homePage(port: number): string {
     var base = "/pr/" + job.prNumber + "/runs/" + encodeURIComponent(runId);
     return (
       '<span class="progress-links">' +
-        '<a href="' + base + '/triage.html">View findings</a>' +
+        '<a href="' + base + '/triage.html">' + ico("list-checks") + " View findings</a>" +
       "</span>"
     );
   }
@@ -1352,10 +1397,10 @@ function homePage(port: number): string {
       if (track.status === "error") cls += " is-error";
       if (logFilter === track.agent) cls += " is-filter";
       var badge = track.status === "error"
-        ? '<span class="pill bad">Failed</span>'
+        ? '<span class="pill bad">' + ico("x-circle") + '<span class="pill-label">Failed</span></span>'
         : track.status === "done"
-          ? '<span class="pill ok">Done</span>'
-          : '<span class="pill running">' + pct + "%</span>";
+          ? '<span class="pill ok">' + ico("check") + '<span class="pill-label">Done</span></span>'
+          : '<span class="pill running">' + ico("activity") + '<span class="pill-label">' + pct + "%</span></span>";
       var err = "";
       if (track.status === "error" && result && result.detail) {
         err = '<p class="factory-error">' + escapeLog(result.detail) + "</p>";
@@ -1366,7 +1411,7 @@ function homePage(port: number): string {
         : track.label || track.status;
       return (
         '<article class="' + cls + '" data-agent="' + escapeLog(track.agent) + '">' +
-          '<div class="factory-top"><span class="factory-name">' + escapeLog(String(track.agent).toUpperCase()) + "</span>" + badge + "</div>" +
+          '<div class="factory-top"><span class="factory-name">' + ico("bot") + " " + escapeLog(String(track.agent).toUpperCase()) + "</span>" + badge + "</div>" +
           '<div class="bar"><span style="width:' + pct + '%"></span></div>' +
           (track.status === "error" ? err : '<div class="pass-stats">' + passHtml + "</div>") +
           '<div class="factory-foot"><span>' + escapeLog(foot) + "</span>" + (links || "") + "</div>" +
@@ -1443,11 +1488,11 @@ function homePage(port: number): string {
     const noAgents = form.classList.contains("is-blocked");
     submit.disabled = noAgents || jobIsActive;
     if (noAgents) {
-      submit.textContent = blockedMessage || "Connect an agent first";
+      setLabeled(submit, blockedMessage || "Connect an agent first");
     } else if (jobIsActive) {
-      submit.textContent = "Running…";
+      setLabeled(submit, "Running…");
     } else {
-      submit.textContent = "Run Review";
+      setLabeled(submit, "Run Review");
     }
   }
 
@@ -1463,9 +1508,9 @@ function homePage(port: number): string {
     const readyCount = Number(body.readyCount || readyIds.length || 0);
 
     if (connectPill) {
-      connectPill.textContent = readyCount
+      setLabeled(connectPill, readyCount
         ? (readyCount + " agent" + (readyCount === 1 ? "" : "s") + " ready")
-        : "No agents found";
+        : "No agents found");
       connectPill.className = "pill " + (readyCount ? "ok" : "bad");
     }
     if (connectBanner) {
@@ -1512,18 +1557,18 @@ function homePage(port: number): string {
         row.className = "row";
         if (agent.installUrl) {
           const a = document.createElement("a");
-          a.className = "btn-link";
+          a.className = "btn-link has-ico";
           a.href = agent.installUrl;
           a.target = "_blank";
           a.rel = "noopener";
-          a.textContent = agent.available ? "Docs" : "Install guide";
+          fillIconLabel(a, "external-link", agent.available ? "Docs" : "Install guide");
           row.appendChild(a);
         }
         if (agent.custom) {
           const rm = document.createElement("button");
           rm.type = "button";
-          rm.className = "btn-remove";
-          rm.textContent = "Remove";
+          rm.className = "btn-remove has-ico";
+          fillIconLabel(rm, "trash", "Remove");
           rm.addEventListener("click", function () {
             removeCustom(agent.id, agent.name);
           });
@@ -1559,8 +1604,8 @@ function homePage(port: number): string {
         if (!agent.available) {
           const setup = document.createElement("button");
           setup.type = "button";
-          setup.className = "setup-link";
-          setup.textContent = "Setup in Settings";
+          setup.className = "setup-link has-ico";
+          fillIconLabel(setup, "settings", "Setup in Settings");
           setup.addEventListener("click", function (ev) {
             ev.preventDefault();
             ev.stopPropagation();
@@ -1581,13 +1626,13 @@ function homePage(port: number): string {
     setFormBlocked(readyCount === 0);
     var mid = document.getElementById("statusbar-mid");
     if (mid) {
-      mid.textContent = readyCount
+      setLabeled(mid, readyCount
         ? readyCount + " agent" + (readyCount === 1 ? "" : "s") + " ready"
-        : "connect an agent in Settings";
+        : "connect an agent in Settings");
     }
     var okBar = document.getElementById("statusbar-ok");
     if (okBar) {
-      okBar.textContent = readyCount ? "System Operational" : "Needs an agent";
+      setLabeled(okBar, readyCount ? "System Operational" : "Needs an agent");
     }
   }
 
@@ -1618,11 +1663,11 @@ function homePage(port: number): string {
     const detail = body && body.detail ? String(body.detail) : "";
     const connected = ok && source !== "anonymous";
     if (githubPill) {
-      githubPill.textContent = connected
+      setLabeled(githubPill, connected
         ? (login ? "@" + login : "Connected")
         : source === "anonymous"
           ? "Public PRs"
-          : "Needs token";
+          : "Needs token");
       githubPill.className = "pill " + (ok ? (connected ? "ok" : "warn") : "bad");
     }
     if (githubBanner) {
@@ -1799,10 +1844,10 @@ function homePage(port: number): string {
     var active = job.status === "queued" || job.status === "running";
     stopBtn.hidden = !active;
     stopBtn.disabled = false;
-    stopBtn.textContent = "Force stop";
+    setLabeled(stopBtn, "Force stop");
     restartBtn.hidden = false;
     restartBtn.disabled = false;
-    restartBtn.textContent = active ? "Force stop & restart" : "Restart";
+    setLabeled(restartBtn, active ? "Force stop & restart" : "Restart");
     if (job.prRef) lastPrRef = job.prRef;
     if (job.agents && job.agents.length) lastAgents = job.agents.slice();
     if (typeof job.extraInstructions === "string") {
@@ -1841,12 +1886,12 @@ function homePage(port: number): string {
     if (mergedReady) {
       const triage = document.createElement("a");
       triage.href = "/pr/" + job.prNumber + "/";
-      triage.textContent = active
+      fillIconLabel(triage, "list-checks", active
         ? "Open triage now (partial merge) · /pr/" + job.prNumber + "/"
-        : "Open triage · /pr/" + job.prNumber + "/";
+        : "Open triage · /pr/" + job.prNumber + "/");
       const list = document.createElement("a");
       list.href = "/pr/" + job.prNumber + "/final-review.html";
-      list.textContent = "Open list";
+      fillIconLabel(list, "list", "Open list");
       linksEl.appendChild(triage);
       linksEl.appendChild(list);
       if (active && okAgents > 0 && okAgents < (job.agents || []).length) {
@@ -1911,7 +1956,7 @@ function homePage(port: number): string {
       return;
     }
     submit.disabled = true;
-    submit.textContent = "Starting…";
+    setLabeled(submit, "Starting…");
     if (requireDecisionsEl) requireDecisionsEl.disabled = true;
     panel.hidden = false;
     statusEl.className = "running";
@@ -1964,7 +2009,7 @@ function homePage(port: number): string {
     if (!jobId) return;
     stopBtn.disabled = true;
     restartBtn.disabled = true;
-    stopBtn.textContent = "Stopping…";
+    setLabeled(stopBtn, "Stopping…");
     const res = await fetch("/api/jobs/" + jobId + "/cancel", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -1997,7 +2042,7 @@ function homePage(port: number): string {
         try { await forceStop(); } catch (e) { /* continue restart */ }
       }
       submit.disabled = true;
-      submit.textContent = "Restarting…";
+      setLabeled(submit, "Restarting…");
       if (requireDecisionsEl) requireDecisionsEl.disabled = true;
       const extraInstructions =
         instructionsForRun() || lastExtraInstructions || DEFAULT_EXTRA;
@@ -2036,10 +2081,10 @@ function homePage(port: number): string {
   if (recheckBtn) {
     recheckBtn.addEventListener("click", function () {
       recheckBtn.disabled = true;
-      recheckBtn.textContent = "Checking…";
+      setLabeled(recheckBtn, "Checking…");
       loadProviders().finally(function () {
         recheckBtn.disabled = false;
-        recheckBtn.textContent = "Re-check";
+        setLabeled(recheckBtn, "Re-check");
       });
     });
   }
@@ -2093,13 +2138,13 @@ function homePage(port: number): string {
         const actionsInner = document.createElement("div");
         actionsInner.className = "actions-inner";
         const open = document.createElement("a");
-        open.className = "btn-link";
+        open.className = "btn-link has-ico";
         open.href = r.href || ("/pr/" + r.prNumber + "/");
-        open.textContent = "Triage";
+        fillIconLabel(open, "list-checks", "Triage");
         const list = document.createElement("a");
-        list.className = "btn-link";
+        list.className = "btn-link has-ico";
         list.href = r.listHref || ("/pr/" + r.prNumber + "/final-review.html");
-        list.textContent = "List";
+        fillIconLabel(list, "list", "List");
         actionsInner.appendChild(open);
         actionsInner.appendChild(list);
         const statusSel = document.createElement("select");
@@ -2138,8 +2183,8 @@ function homePage(port: number): string {
         });
         const removeBtn = document.createElement("button");
         removeBtn.type = "button";
-        removeBtn.className = "danger";
-        removeBtn.textContent = "Remove";
+        removeBtn.className = "danger has-ico";
+        fillIconLabel(removeBtn, "trash", "Remove");
         removeBtn.addEventListener("click", async function (ev) {
           ev.stopPropagation();
           if (!confirm("Remove local review for PR #" + r.prNumber + "? This deletes reviews/" + r.prNumber + "/")) {

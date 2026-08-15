@@ -7,6 +7,16 @@ export {
 } from "./verify-report.js";
 export { sortFindingsForTriage } from "./sort-findings.js";
 export { githubFileUrl } from "./github-file-link.js";
+export { iconHtml, iconTextHtml, ICON_INNER } from "./ui-icons.js";
+export type { UiIconName } from "./ui-icons.js";
+export {
+  sidebarChromeCss,
+  sidebarBootScript,
+  sidebarToggleScript,
+  sidebarToggleButtonHtml,
+  workspaceChromeHeadHtml,
+} from "./sidebar-chrome.js";
+export { workspaceChromeOpenHtml, workspaceChromeCss } from "./agent-nav.js";
 export { writeReviewArtifacts, writeKnowledgeDocs } from "./write.js";
 export { renderReviewFromDir } from "./render-dir.js";
 export type { RenderReviewDirResult } from "./render-dir.js";
