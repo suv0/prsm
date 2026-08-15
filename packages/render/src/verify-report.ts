@@ -52,6 +52,7 @@ function pageCss(): string {
     .follow { background:#0d0e0f; border:1px solid var(--line); border-radius:4px; padding:.65rem .75rem; white-space:pre-wrap; font:0.85rem "JetBrains Mono",ui-monospace,monospace; }
     .agents { margin:.5rem 0 0; padding-left:1.1rem; color:var(--muted); font-size:.88rem; }
     .agents strong { color:var(--ink); }
+    a { color: var(--acc); }
     .muted a { display: inline-flex; align-items: center; gap: 4px; }
     h3 { margin:.4rem 0; color:#fff; font-size:1.02rem; }
   `;

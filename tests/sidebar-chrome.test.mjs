@@ -69,3 +69,12 @@ test("icon catalog includes hub and action glyphs", () => {
     assert.match(iconHtml(name), /aria-hidden="true"/);
   }
 });
+
+test("verify pages keep accent-colored links", async () => {
+  const { renderVerifyPlaceholderHtml } = await import(
+    "../packages/render/dist/verify-report.js"
+  );
+  const html = renderVerifyPlaceholderHtml({ prNumber: 1, title: "demo" });
+  assert.match(html, /a \{ color: var\(--acc\); \}/);
+  assert.match(html, /\.muted a \{ display: inline-flex/);
+});
