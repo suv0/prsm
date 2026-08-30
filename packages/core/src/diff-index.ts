@@ -171,6 +171,29 @@ function lineMatchesCode(
 }
 
 /**
+ * Heuristic: does this finding's `currentCode` still appear on the PR head
+ * side of the diff? Used when reconciling across review waves (no model call).
+ * Missing/empty diff → assume still present (carry forward).
+ */
+export function findingCodeStillInDiff(
+  finding: Finding,
+  diffText: string,
+): boolean {
+  const code = finding.currentCode?.trim();
+  if (!code) return true;
+  if (!diffText.trim()) return true;
+
+  const index = buildDiffIndex(diffText);
+  if (index.size === 0) return true;
+
+  const file = findFileIndex(index, finding.file);
+  if (!file) return false;
+
+  if (lineMatchesCode(file, finding.line, code)) return true;
+  return matchLineByCode(file, code) !== null;
+}
+
+/**
  * Correct hallucinated line numbers using the PR diff.
  * Never invent lines outside the head-file side of the patch.
  */

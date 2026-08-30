@@ -69,6 +69,7 @@ Rules:
 - **Line numbers must come from the PR diff head side only.** New file `+1,16` ⇒ lines 1–16. Never guess.
 - If the line is unclear, use `githubCommentTarget.target: "summary"` instead of inventing a number
 - **Documented intent:** if comments/docs explain why code is temporary/intentional, prefer `severity: suggestion` + `category: documented-debt` (follow-up reminder), not a gotcha blocker. Acknowledge the reasoning.
+- **Decisions/plan drift:** if the diff touches (or clearly should touch) a design-decision, plan, or architecture doc (ADRs, `DECISIONS.md`, `PLAN.md`, `docs/*.md`, a README section describing this behavior), check the code and the doc actually agree. Flag it (`category: process` or `documentation`) when the code contradicts what a decision/plan doc in this diff says, a decision doc changed in this diff doesn't match the code it now describes, or a change this size clearly needed a decision-doc update that's missing. Don't invent a finding when no such doc is touched or implicated.
 
 Default passes: `correctness`, `nitpick`, `devils-advocate`.
 

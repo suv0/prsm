@@ -20,6 +20,7 @@ import type { PrOverview } from "@review-os/schemas";
 import { writeReviewArtifacts } from "@review-os/render";
 import type { AppConfig } from "@review-os/schemas";
 import { loadCustomAgents } from "./custom-agents.js";
+import { runExternalDuplicateCheck } from "./run-external-check.js";
 
 export const LIVE_PASSES = new Set(["correctness", "nitpick", "devils-advocate"]);
 
@@ -70,6 +71,8 @@ function isParallelCliAgent(
 
 export type LogFn = (line: string) => void;
 
+export type VersionGate = <T>(fn: () => Promise<T>) => Promise<T>;
+
 export function withProviderPasses(
   config: AppConfig,
   providerId: string,
@@ -111,7 +114,7 @@ export async function runWithProvider(options: {
   /** Skip archive (caller already archived once for a multi-agent batch). */
   skipArchive?: boolean;
   /** Serialize snapshot+merge when agents finish in parallel. */
-  versionGate?: <T>(fn: () => Promise<T>) => Promise<T>;
+  versionGate?: VersionGate;
 }): Promise<{
   prNumber: number;
   outputDir: string;
@@ -242,11 +245,31 @@ export async function runWithProvider(options: {
       diffText: pr.diff,
       render: writeReviewArtifacts,
       rebuild: rebuildMergedReview,
+      log,
     }),
   );
 
+  // Best-effort, every run: does an open finding overlap a pre-existing GitHub
+  // thread from someone else (human or bot)? Shares `gate` with the merge
+  // above since it also reads/rewrites run.json — never let it fail the run.
+  await gate(() =>
+    runExternalDuplicateCheck({
+      repoRoot: options.repoRoot,
+      outputDir,
+      prRef: options.prRef,
+      providerId: options.providerId,
+      log,
+    }).catch((error) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      log(`External-comment check errored (non-fatal): ${detail}`);
+    }),
+  );
+
+  const reconcileNote = versioned.reconcile
+    ? ` · reconcile dropped ${versioned.reconcile.dropped}, carried ${versioned.reconcile.carried}`
+    : "";
   log(
-    `Done · agent ${versioned.agent} · raw ${run.findings.length} · merged ${versioned.mergedFindingCount} across ${versioned.runCount} run(s)`,
+    `Done · agent ${versioned.agent} · raw ${run.findings.length} · merged ${versioned.mergedFindingCount} across ${versioned.runCount} run(s)${reconcileNote}`,
   );
 
   return {
@@ -302,6 +325,12 @@ export async function runAllCliAgents(options: {
   extraInstructions?: string;
   /** Fired as soon as the PR is fetched, and again each time an agent finishes. */
   onProgress?: (event: AgentProgressEvent) => void;
+  /**
+   * Serialize snapshot+merge across every agent in this batch. Pass one in
+   * (and keep it) so a later solo retry for the same PR/job can share it
+   * instead of racing the still-in-flight agents from this batch.
+   */
+  versionGate?: VersionGate;
 }): Promise<{
   prNumber: number;
   outputDir: string;
@@ -405,7 +434,7 @@ export async function runAllCliAgents(options: {
     runnable.push(agent);
   }
 
-  const versionGate = createAsyncMutex();
+  const versionGate = options.versionGate ?? createAsyncMutex();
   const multi = runnable.length > 1;
 
   if (runnable.length > 0) {

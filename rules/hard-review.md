@@ -13,6 +13,14 @@ Prefer fewer, sharper findings over noise. Stay skeptical: verify behavior from 
 7. **Dead code / scope** — unnecessary code or unrelated changes
 8. **Maintainability** — fragile assumptions, positional mappings, hardcoded policy
 9. **Tests** — important behavior that isn't covered
+10. **Decisions/plan drift** — if the diff touches (or clearly should touch) a design-decision,
+    plan, or architecture doc — ADRs, `DECISIONS.md`, `PLAN.md`, `docs/*.md`, a README section
+    describing this behavior — check the code and the doc actually agree. Flag it (category
+    `process` or `documentation`) when: the code contradicts what a decision/plan doc in this
+    diff says, a decision doc changed in this diff doesn't match the code it now describes, or a
+    change this size clearly needed a decision-doc update that's missing. Don't invent a finding
+    when no such doc is touched or implicated — this lens is about drift, not demanding docs that
+    were never expected.
 
 Stay in your pass lane for severity and categories, but do not ignore a clear issue in your lens just because another specialist might also see it.
 

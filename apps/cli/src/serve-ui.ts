@@ -8,6 +8,10 @@ import {
   listAvailableProviders,
 } from "@review-os/providers";
 import {
+  describeProviderFailure,
+  isFatalProviderError,
+} from "@review-os/core";
+import {
   clearGithubToken,
   fetchUserLogin,
   probeGithubAccess,
@@ -16,6 +20,7 @@ import {
 } from "@review-os/github";
 import { readFile, access } from "node:fs/promises";
 import {
+  Help,
   ICON_INNER,
   iconHtml,
   iconTextHtml,
@@ -24,12 +29,17 @@ import {
   sidebarChromeCss,
   sidebarToggleButtonHtml,
   sidebarToggleScript,
+  tip,
+  uiHelpScript,
   workspaceChromeHeadHtml,
 } from "@review-os/render";
 import {
   DEFAULT_MULTI_AGENTS,
+  createAsyncMutex,
   runAllCliAgents,
+  runWithProvider,
   type AgentRunResult,
+  type VersionGate,
 } from "./run-provider.js";
 import { detectAgentStatuses } from "./agent-catalog.js";
 import { addCustomAgent, removeCustomAgent } from "./custom-agents.js";
@@ -49,6 +59,7 @@ import {
   applyLogToProgress,
   initJobProgress,
   syncTracksFromResults,
+  SPECIALIST_PASSES,
   type JobProgress,
 } from "./job-progress.js";
 
@@ -99,6 +110,7 @@ Hard review lenses (cover as applicable):
 7. Dead code/scope — unnecessary code or unrelated changes.
 8. Maintainability — fragile assumptions, positional mappings, hardcoded policy.
 9. Tests — important behavior that isn't covered.
+10. Decisions/plan drift — if the diff touches (or clearly should touch) a design-decision, plan, or architecture doc (ADRs, DECISIONS.md, PLAN.md, docs/*.md, a README section describing this behavior), check the code and the doc actually agree. Flag it when the code contradicts what a decision/plan doc in this diff says, a decision doc changed in this diff doesn't match the code it now describes, or a change this size clearly needed a decision-doc update that's missing. Don't invent a finding when no such doc is touched or implicated.
 
 Stance:
 - Be skeptical: verify claimed behavior from the code and related call sites.
@@ -128,6 +140,55 @@ If missing or too thin to capture real decisions:
 If an adequate decisions \`.md\` is present and matches the change, do not invent a finding for this rule.`;
 
 const jobs = new Map<string, Job>();
+
+/** One snapshot+merge mutex per job, shared by the initial batch and any solo agent retries. */
+const jobGates = new Map<string, VersionGate>();
+
+/** Agents ever retried for a job. Once a solo retry takes ownership of an agent's
+ *  track/result, the original batch's (stale, already-in-flight) Promise.all outcome
+ *  for that agent must never overwrite it again — checked permanently, not just while
+ *  the retry is running, since the batch can settle after the retry finishes too. */
+const jobRetryOwned = new Map<string, Set<string>>();
+
+function gateForJob(jobId: string): VersionGate {
+  let gate = jobGates.get(jobId);
+  if (!gate) {
+    gate = createAsyncMutex();
+    jobGates.set(jobId, gate);
+  }
+  return gate;
+}
+
+function retryOwnedSetFor(jobId: string): Set<string> {
+  let set = jobRetryOwned.get(jobId);
+  if (!set) {
+    set = new Set();
+    jobRetryOwned.set(jobId, set);
+  }
+  return set;
+}
+
+/** True while any agent track for this job is still actively working (initial run or a retry). */
+function jobHasActiveAgent(job: Job): boolean {
+  return job.progress.agents.some(
+    (t) => t.status === "running" || t.status === "queued",
+  );
+}
+
+/**
+ * True while a solo /api/jobs/:id/retry-agent call for this job is still running.
+ * The initial /api/review batch must check this (not jobHasActiveAgent) before it
+ * finalizes job.status/busyJobId: every track starts "queued", so a throw before
+ * any agent starts (e.g. loadCustomAgents/createProviderRegistry) would otherwise
+ * see "an agent is active" forever and wedge busyJobId until the hub restarts.
+ */
+function retryInFlight(job: Job): boolean {
+  const owned = retryOwnedSetFor(job.id);
+  if (owned.size === 0) return false;
+  return job.progress.agents.some(
+    (t) => t.status === "running" && owned.has(t.agent),
+  );
+}
 
 function json(res: http.ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, {
@@ -791,7 +852,8 @@ function homePage(port: number): string {
       gap: 6px;
       align-items: center;
     }
-    .review-table .actions-inner a.btn-link {
+    .review-table .actions-inner a.btn-link,
+    .review-table .actions-inner button.btn-link {
       display: inline-block;
       font-size: 12px;
       font-weight: 600;
@@ -802,8 +864,15 @@ function homePage(port: number): string {
       padding: 4px 8px;
       background: var(--inset);
       white-space: nowrap;
+      cursor: pointer;
     }
-    .review-table .actions-inner a.btn-link:hover { border-color: var(--accent); color: #fff; }
+    .review-table .actions-inner a.btn-link:hover,
+    .review-table .actions-inner button.btn-link:hover { border-color: var(--accent); color: #fff; }
+    .review-table .actions-inner button.btn-link.is-warn-btn {
+      color: var(--bad);
+      border-color: #8b2e2e;
+    }
+    .review-table .actions-inner button.btn-link.is-warn-btn:hover { color: #fff; background: #5a1d1d; }
     .review-table .actions-inner select {
       max-width: 9.5rem;
       flex-shrink: 0;
@@ -947,6 +1016,9 @@ function homePage(port: number): string {
       background: #2a1818; border: 1px solid #8b2e2e; color: #ffdad6; font-size: 12px;
     }
     .factory-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+    .factory-hint { margin: 0 0 8px; font-size: 11px; color: var(--muted); }
+    .factory-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+    .factory-actions button { padding: 4px 10px; font-size: 12px; }
     .console-stream {
       border: 1px solid var(--line); border-radius: var(--radius); background: #0d0e0f;
     }
@@ -970,26 +1042,26 @@ function homePage(port: number): string {
         ${sidebarToggleButtonHtml()}
       </div>
       <nav>
-        <button type="button" class="nav-item is-active" data-nav="inbox" title="Home" aria-label="Home">${iconTextHtml("home", "Home", "nav-label")}</button>
-        <button type="button" class="nav-item" data-nav="run" title="New Review" aria-label="New Review">${iconTextHtml("plus", "New Review", "nav-label")}</button>
-        <button type="button" class="nav-item" data-nav="settings" title="Settings" aria-label="Settings">${iconTextHtml("settings", "Settings", "nav-label")}</button>
+        <button type="button" class="nav-item is-active" data-nav="inbox" ${tip(Help.navHome)} aria-label="Home">${iconTextHtml("home", "Home", "nav-label")}</button>
+        <button type="button" class="nav-item" data-nav="run" ${tip(Help.navNewReview)} aria-label="New Review">${iconTextHtml("plus", "New Review", "nav-label")}</button>
+        <button type="button" class="nav-item" data-nav="settings" ${tip(Help.navSettings)} aria-label="Settings">${iconTextHtml("settings", "Settings", "nav-label")}</button>
       </nav>
       <div class="sidebar-foot">
-        <button type="button" class="nav-item" data-nav="live" id="sidebar-status" title="Status" aria-label="Status">${iconTextHtml("activity", "Status", "nav-label")}</button>
+        <button type="button" class="nav-item" data-nav="live" id="sidebar-status" ${tip(Help.navLive)} aria-label="Status">${iconTextHtml("activity", "Status", "nav-label")}</button>
       </div>
     </aside>
     <div class="stage">
       <header class="topbar">
         <p class="ws-title">${iconHtml("layers")} PRism Workspace</p>
         <nav class="ws-tabs" aria-label="Workspace">
-          <button type="button" data-nav="live" id="tab-live" class="has-ico">${iconTextHtml("zap", "Live run")}</button>
-          <a href="#" id="tab-triage" class="is-off has-ico">${iconTextHtml("list-checks", "Triage")}</a>
-          <a href="#" id="tab-list" class="is-off has-ico">${iconTextHtml("list", "List")}</a>
-          <a href="#" id="tab-verify" class="is-off has-ico">${iconTextHtml("shield-check", "Verify")}</a>
+          <button type="button" data-nav="live" id="tab-live" class="has-ico" ${tip(Help.tabLive)}>${iconTextHtml("zap", "Live run")}</button>
+          <a href="#" id="tab-triage" class="is-off has-ico" ${tip(Help.tabTriage)}>${iconTextHtml("list-checks", "Triage")}</a>
+          <a href="#" id="tab-list" class="is-off has-ico" ${tip(Help.tabList)}>${iconTextHtml("list", "List")}</a>
+          <a href="#" id="tab-verify" class="is-off has-ico" ${tip(Help.tabVerify)}>${iconTextHtml("shield-check", "Report")}</a>
         </nav>
         <div class="ws-utils">
-          <span class="pill warn" id="github-pill">${iconHtml("github")}<span class="pill-label">GitHub…</span></span>
-          <span class="pill warn" id="connect-pill">${iconHtml("bot")}<span class="pill-label">Agents…</span></span>
+          <span class="pill warn" id="github-pill" ${tip(Help.statusPillGithub)}>${iconHtml("github")}<span class="pill-label">GitHub…</span></span>
+          <span class="pill warn" id="connect-pill" ${tip(Help.statusPillAgents)}>${iconHtml("bot")}<span class="pill-label">Agents…</span></span>
         </div>
       </header>
       <div class="stage-body">
@@ -999,27 +1071,27 @@ function homePage(port: number): string {
       <p class="lede">Inbox of past reviews</p>
       <div class="card" id="reviews-card">
       <div class="reviews-head">
-        <p class="section-label">${iconHtml("folder")} PRs on this machine</p>
+        <p class="section-label" ${tip(Help.inboxTable)}>${iconHtml("folder")} PRs on this machine</p>
         <div>
-          <button type="button" id="btn-new-review" class="has-ico">${iconTextHtml("plus", "New review")}</button>
-          <button type="button" class="btn-secondary has-ico" id="btn-refresh-reviews">${iconTextHtml("refresh", "Refresh")}</button>
+          <button type="button" id="btn-new-review" class="has-ico" ${tip(Help.btnNewReview)}>${iconTextHtml("plus", "New review")}</button>
+          <button type="button" class="btn-secondary has-ico" id="btn-refresh-reviews" ${tip(Help.btnRefreshReviews)}>${iconTextHtml("refresh", "Refresh")}</button>
         </div>
       </div>
       <p id="reviews-empty" hidden>No local reviews yet. Start a New review.</p>
-      <table class="review-table" id="review-table" hidden>
+      <table class="review-table" id="review-table" hidden ${tip(Help.inboxTable)}>
         <thead>
-          <tr><th>PR #</th><th>Title</th><th>Status</th><th>Findings</th><th>Actions</th></tr>
+          <tr><th>PR #</th><th>Title</th><th ${tip("Your hub label for this PR (awaiting author, ready to verify, needs triage).")}>Status</th><th ${tip(Help.listOpen)}>Findings</th><th>Actions</th></tr>
         </thead>
         <tbody id="review-list"></tbody>
       </table>
       </div>
       <div class="dash-split">
-        <div class="dash-box" id="activity-box">
+        <div class="dash-box" id="activity-box" ${tip(Help.activityBox)}>
           <p class="section-label">${iconHtml("activity")} Activity context</p>
           <p class="activity-empty" id="activity-empty">Select a review row above to view dense analytics and activity streams</p>
           <div id="activity-detail" hidden></div>
         </div>
-        <div class="dash-box">
+        <div class="dash-box" ${tip(Help.metricsBox)}>
           <p class="section-label">${iconHtml("layers")} Metrics</p>
           <div class="metric-row">${iconHtml("inbox")} Open findings <span class="val" id="metric-open">0</span></div>
           <div class="metric-row">${iconHtml("alert-triangle")} Pending blockers <span class="val bad" id="metric-blockers">0</span></div>
@@ -1040,8 +1112,8 @@ function homePage(port: number): string {
         <label>Personal access token
           <input id="github-token" type="password" name="token" autocomplete="off" placeholder="ghp_… or github_pat_…" />
         </label>
-        <button type="submit" class="btn-secondary has-ico" id="btn-github-save">${iconTextHtml("save", "Save token")}</button>
-        <button type="button" class="btn-secondary has-ico" id="btn-github-clear" hidden>${iconTextHtml("unplug", "Disconnect")}</button>
+        <button type="submit" class="btn-secondary has-ico" id="btn-github-save" ${tip(Help.githubSave)}>${iconTextHtml("save", "Save token")}</button>
+        <button type="button" class="btn-secondary has-ico" id="btn-github-clear" hidden ${tip(Help.githubClear)}>${iconTextHtml("unplug", "Disconnect")}</button>
       </form>
       <p class="hint" style="margin:0.45rem 0 0">Create a token with repo read access:
         <a href="https://github.com/settings/tokens/new?description=PRism&amp;scopes=repo" target="_blank" rel="noopener">github.com/settings/tokens/new</a>
@@ -1052,7 +1124,7 @@ function homePage(port: number): string {
     <section class="card" id="connect">
       <div class="connect-head">
         <h2>${iconHtml("bot")} AI agents</h2>
-        <button type="button" class="btn-secondary has-ico" id="btn-recheck">${iconTextHtml("refresh", "Re-check")}</button>
+        <button type="button" class="btn-secondary has-ico" id="btn-recheck" ${tip(Help.agentsRecheck)}>${iconTextHtml("refresh", "Re-check")}</button>
       </div>
       <p id="connect-banner" class="need">Looking for local agent CLIs…</p>
       <div class="agent-grid" id="agent-grid"></div>
@@ -1077,7 +1149,7 @@ function homePage(port: number): string {
             <span>Pass the prompt as <code>-p</code> (keep on for Codex / Gemini-style CLIs). Uncheck if the docs show the prompt as the last argument (Aider-style).</span>
           </label>
           <div class="span-2">
-            <button type="submit" class="btn-secondary has-ico" id="btn-add-agent">${iconTextHtml("plus", "Add agent")}</button>
+            <button type="submit" class="btn-secondary has-ico" id="btn-add-agent" ${tip(Help.addAgent)}>${iconTextHtml("plus", "Add agent")}</button>
           </div>
         </form>
         <p id="add-agent-msg" class="hint"></p>
@@ -1108,11 +1180,11 @@ function homePage(port: number): string {
           <p class="hint" style="margin:8px 0">Editable. Sent to every agent on the next Run. Defaults are naming-in-context + hard-review lenses. Clear the box for built-in prompts only. Saved in this browser.</p>
           <textarea id="extra-instructions" name="extra-instructions" spellcheck="true" rows="12"></textarea>
           <div class="instr-toolbar">
-            <button type="button" class="btn-secondary has-ico" id="btn-reset-instructions">${iconTextHtml("rotate-ccw", "Reset to default")}</button>
+            <button type="button" class="btn-secondary has-ico" id="btn-reset-instructions" ${tip(Help.resetInstructions)}>${iconTextHtml("rotate-ccw", "Reset to default")}</button>
           </div>
         </details>
         <div class="rule-toggles" style="margin-top:12px">
-          <label for="require-decisions-md">
+          <label for="require-decisions-md" ${tip(Help.requireDecisions)}>
             <input type="checkbox" id="require-decisions-md" />
             <span>Require design-decision <code>.md</code> output</span>
           </label>
@@ -1120,7 +1192,7 @@ function homePage(port: number): string {
         </div>
       </div>
       <div class="run-row">
-        <button type="submit" id="submit" class="has-ico">${iconTextHtml("play", "Run Review")}</button>
+        <button type="submit" id="submit" class="has-ico" ${tip(Help.runReview)}>${iconTextHtml("play", "Run Review")}</button>
       </div>
     </form>
     </section>
@@ -1135,8 +1207,8 @@ function homePage(port: number): string {
           <p class="job-meta" id="job-meta"></p>
         </div>
         <div class="job-actions">
-          <button type="button" class="danger has-ico" id="btn-stop" hidden>${iconTextHtml("square", "Force stop")}</button>
-          <button type="button" class="btn-secondary has-ico" id="btn-restart" hidden>${iconTextHtml("rotate-cw", "Restart")}</button>
+          <button type="button" class="danger has-ico" id="btn-stop" hidden ${tip(Help.forceStop)}>${iconTextHtml("square", "Force stop")}</button>
+          <button type="button" class="btn-secondary has-ico" id="btn-restart" hidden ${tip(Help.restartJob)}>${iconTextHtml("rotate-cw", "Restart")}</button>
         </div>
       </div>
       <div id="links"></div>
@@ -1159,6 +1231,7 @@ function homePage(port: number): string {
     </div>
   </div>
   <script>${sidebarToggleScript()}</script>
+  <script>${uiHelpScript()}</script>
   <script>
 (function () {
   var ICO = ${JSON.stringify(ICON_INNER)};
@@ -1221,6 +1294,7 @@ function homePage(port: number): string {
   let lastExtraInstructions = "";
   let lastRequireDecisionsMd = false;
   let readyIds = [];
+  var agentCatalogById = {};
   let logFilter = "";
 
   const VIEW_TITLES = {
@@ -1402,8 +1476,21 @@ function homePage(port: number): string {
           ? '<span class="pill ok">' + ico("check") + '<span class="pill-label">Done</span></span>'
           : '<span class="pill running">' + ico("activity") + '<span class="pill-label">' + pct + "%</span></span>";
       var err = "";
-      if (track.status === "error" && result && result.detail) {
-        err = '<p class="factory-error">' + escapeLog(result.detail) + "</p>";
+      var actions = "";
+      if (track.status === "error") {
+        if (result && result.detail) {
+          err = '<p class="factory-error">' + escapeLog(result.detail) + "</p>";
+        }
+        var catalog = agentCatalogById[track.agent];
+        if (catalog && catalog.loginHint) {
+          err += '<p class="factory-hint">If this is an auth/login problem: ' +
+            escapeLog(catalog.loginHint) + "</p>";
+        }
+        actions = '<div class="factory-actions">' +
+          '<button type="button" class="btn-secondary has-ico btn-retry-agent" data-agent="' +
+          escapeLog(track.agent) + '" title="Retry only this agent — reruns it and merges its findings into this job, without restarting the others.">' +
+          ico("rotate-cw") + '<span class="btn-label">Retry agent</span></button>' +
+        "</div>";
       }
       var links = agentRunLinks(job, track.agent);
       var foot = track.status === "running"
@@ -1415,6 +1502,7 @@ function homePage(port: number): string {
           '<div class="bar"><span style="width:' + pct + '%"></span></div>' +
           (track.status === "error" ? err : '<div class="pass-stats">' + passHtml + "</div>") +
           '<div class="factory-foot"><span>' + escapeLog(foot) + "</span>" + (links || "") + "</div>" +
+          actions +
         "</article>"
       );
     }).join("");
@@ -1431,6 +1519,36 @@ function homePage(port: number): string {
         renderLogs(job);
       });
     });
+    progressEl.querySelectorAll(".btn-retry-agent").forEach(function (btn) {
+      btn.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        retryAgent(job.id, btn.getAttribute("data-agent") || "", btn);
+      });
+    });
+  }
+
+  async function retryAgent(forJobId, agent, btn) {
+    if (!forJobId || !agent) return;
+    if (btn) {
+      btn.disabled = true;
+      setLabeled(btn, "Retrying…");
+    }
+    try {
+      const res = await fetch("/api/jobs/" + forJobId + "/retry-agent", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agent: agent }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || ("HTTP " + res.status));
+      startPolling(forJobId);
+    } catch (e) {
+      if (btn) {
+        btn.disabled = false;
+        setLabeled(btn, "Retry agent");
+      }
+      alert(e && e.message ? e.message : "Retry failed");
+    }
   }
 
   function loadInstructions() {
@@ -1505,6 +1623,10 @@ function homePage(port: number): string {
   function renderConnect(body) {
     const agents = Array.isArray(body.agents) ? body.agents : [];
     readyIds = Array.isArray(body.readyIds) ? body.readyIds.slice() : [];
+    agentCatalogById = {};
+    agents.forEach(function (agent) {
+      if (agent && agent.id) agentCatalogById[agent.id] = agent;
+    });
     const readyCount = Number(body.readyCount || readyIds.length || 0);
 
     if (connectPill) {
@@ -1641,6 +1763,9 @@ function homePage(port: number): string {
       const res = await fetch("/api/providers");
       const body = await res.json();
       renderConnect(body);
+      // Review rows' per-agent run picker needs agentCatalogById — re-render
+      // once it's populated (loadReviews() may have already run with it empty).
+      loadReviews();
     } catch (e) {
       if (connectBanner) {
         connectBanner.className = "need";
@@ -2147,6 +2272,82 @@ function homePage(port: number): string {
         fillIconLabel(list, "list", "List");
         actionsInner.appendChild(open);
         actionsInner.appendChild(list);
+        if (r.lastJobId) {
+          const isActive = r.lastJobStatus === "running" || r.lastJobStatus === "queued";
+          const runBtn = document.createElement("button");
+          runBtn.type = "button";
+          runBtn.className = "btn-link has-ico" + (r.lastJobHasErrors ? " is-warn-btn" : "");
+          fillIconLabel(runBtn, r.lastJobHasErrors ? "x-circle" : "activity", isActive ? "Live" : "Last run");
+          runBtn.title = isActive
+            ? "Watch this PR's review as it runs."
+            : "Reopen this PR's last run — see per-agent status and retry a failed agent.";
+          runBtn.addEventListener("click", function (ev) {
+            ev.stopPropagation();
+            startPolling(r.lastJobId);
+          });
+          actionsInner.appendChild(runBtn);
+        }
+        if (r.prUrl) {
+          const agentIds = Object.keys(agentCatalogById);
+          if (agentIds.length) {
+            const agentSel = document.createElement("select");
+            agentSel.className = "row-agent-pick";
+            agentSel.title = "Pick an agent to run (or retry) for this PR.";
+            agentSel.setAttribute(
+              "aria-label",
+              "Pick an agent to run for PR #" + r.prNumber,
+            );
+            agentIds.forEach(function (id) {
+              const agent = agentCatalogById[id];
+              const opt = document.createElement("option");
+              opt.value = id;
+              opt.textContent = (agent && agent.name) || id;
+              if (agent && !agent.available) opt.disabled = true;
+              agentSel.appendChild(opt);
+            });
+            const ready = agentIds.find(function (id) {
+              return agentCatalogById[id] && agentCatalogById[id].available;
+            });
+            if (ready) agentSel.value = ready;
+            agentSel.addEventListener("click", function (ev) { ev.stopPropagation(); });
+
+            const runOneBtn = document.createElement("button");
+            runOneBtn.type = "button";
+            runOneBtn.className = "btn-link has-ico";
+            fillIconLabel(runOneBtn, "rotate-cw", "Run agent");
+            runOneBtn.title =
+              "Run (or retry) just this agent against PR #" + r.prNumber +
+              " — merges its findings into this review, without touching the others.";
+            runOneBtn.addEventListener("click", async function (ev) {
+              ev.stopPropagation();
+              const agentId = agentSel.value;
+              if (!agentId) return;
+              runOneBtn.disabled = true;
+              setLabeled(runOneBtn, "Starting…");
+              try {
+                const res = await fetch("/api/review", {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify({ prRef: r.prUrl, agents: [agentId] }),
+                });
+                const body = await res.json();
+                if (res.status === 409 && body.jobId) {
+                  startPolling(body.jobId);
+                  return;
+                }
+                if (!res.ok) throw new Error(body.error || ("HTTP " + res.status));
+                startPolling(body.jobId);
+              } catch (e) {
+                alert(e && e.message ? e.message : "Could not start agent run");
+              } finally {
+                runOneBtn.disabled = false;
+                setLabeled(runOneBtn, "Run agent");
+              }
+            });
+            actionsInner.appendChild(agentSel);
+            actionsInner.appendChild(runOneBtn);
+          }
+        }
         const statusSel = document.createElement("select");
         statusSel.setAttribute("aria-label", "Mark status for PR " + r.prNumber);
         [
@@ -2321,7 +2522,28 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
         const reviews = await listReviewSummaries(reviewsRoot, {
           runningPrNumbers: running,
         });
-        json(res, 200, { reviews });
+        // Most recent in-memory job per PR — lets the hub jump back into a
+        // job's live view (agent cards, retry) even after it's finished and
+        // the user has navigated away from that page.
+        const lastJobByPr = new Map<number, Job>();
+        for (const job of jobs.values()) {
+          if (typeof job.prNumber !== "number") continue;
+          const existing = lastJobByPr.get(job.prNumber);
+          if (!existing || job.updatedAt > existing.updatedAt) {
+            lastJobByPr.set(job.prNumber, job);
+          }
+        }
+        const withJobs = reviews.map((r) => {
+          const last = lastJobByPr.get(r.prNumber);
+          if (!last) return r;
+          return {
+            ...r,
+            lastJobId: last.id,
+            lastJobStatus: last.status,
+            lastJobHasErrors: last.results.some((res) => res.status === "error"),
+          };
+        });
+        json(res, 200, { reviews: withJobs });
         return;
       }
 
@@ -2626,6 +2848,145 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
         return;
       }
 
+      if (
+        method === "POST" &&
+        url.pathname.startsWith("/api/jobs/") &&
+        url.pathname.endsWith("/retry-agent")
+      ) {
+        const id = url.pathname.slice(
+          "/api/jobs/".length,
+          -"/retry-agent".length,
+        );
+        const job = jobs.get(id);
+        if (!job) {
+          json(res, 404, { error: "Job not found" });
+          return;
+        }
+
+        let agent = "";
+        try {
+          const raw = await readBody(req);
+          const body = JSON.parse(raw) as { agent?: string };
+          agent = String(body.agent ?? "").trim();
+        } catch {
+          // validated as empty below
+        }
+        if (!agent) {
+          json(res, 400, { error: "agent is required" });
+          return;
+        }
+        if (!job.prNumber || !job.outputDir) {
+          json(res, 400, {
+            error: "Job has no output yet — wait for the PR fetch to finish",
+          });
+          return;
+        }
+        const track = job.progress.agents.find((t) => t.agent === agent);
+        if (!track) {
+          json(res, 400, { error: `"${agent}" is not one of this job's agents` });
+          return;
+        }
+        if (track.status !== "error" && track.status !== "skipped") {
+          json(res, 409, {
+            error: `${agent} is ${track.status}, not failed — nothing to retry`,
+          });
+          return;
+        }
+        if (busyJobId && busyJobId !== job.id) {
+          json(res, 409, {
+            error: "Another review is running — wait for it to finish first",
+          });
+          return;
+        }
+
+        retryOwnedSetFor(job.id).add(agent);
+        busyJobId = job.id;
+        track.status = "running";
+        track.startedAt = new Date().toISOString();
+        delete track.finishedAt;
+        track.label = "Retrying…";
+        track.passes = SPECIALIST_PASSES.map((passId) => ({
+          id: passId,
+          status: "pending" as const,
+        }));
+        job.status = "running";
+        delete job.error;
+        const staleIdx = job.results.findIndex((r) => r.agent === agent);
+        if (staleIdx >= 0) job.results.splice(staleIdx, 1);
+        touch(job);
+        appendLog(job, `[${agent}] Retry requested by user`);
+
+        const prRef = job.prRef;
+        const jobId = job.id;
+        void (async () => {
+          try {
+            const { providers } = await createLiveRegistry();
+            const result = await runWithProvider({
+              prRef,
+              repoRoot,
+              config,
+              providers,
+              providerId: agent,
+              agent,
+              log: (line) => appendLog(job, `[${agent}] ${line}`),
+              isolateWork: true,
+              skipArchive: true,
+              versionGate: gateForJob(jobId),
+            });
+            const okResult: AgentRunResult = {
+              agent,
+              status: "ok",
+              detail: `runs/${result.runId}`,
+              rawFindingCount: result.rawFindingCount,
+              mergedFindingCount: result.mergedFindingCount,
+              runCount: result.runCount,
+              runId: result.runId,
+            };
+            const idx = job.results.findIndex((r) => r.agent === agent);
+            if (idx >= 0) job.results[idx] = okResult;
+            else job.results.push(okResult);
+            job.mergedFindingCount = result.mergedFindingCount;
+            appendLog(
+              job,
+              `[${agent}] ✓ ${agent} merged into triage (${result.mergedFindingCount} finding(s) from ${result.runCount} agent run(s)). Open /pr/${job.prNumber}/ now.`,
+            );
+          } catch (error) {
+            const detail =
+              error instanceof Error ? error.message : String(error);
+            const shown = describeProviderFailure(detail);
+            appendLog(
+              job,
+              isFatalProviderError(detail)
+                ? `[${agent}] Stopped (credit/quota/auth): ${shown}`
+                : `[${agent}] Failed: ${shown}`,
+            );
+            const errResult: AgentRunResult = {
+              agent,
+              status: "error",
+              detail: shown,
+            };
+            const idx = job.results.findIndex((r) => r.agent === agent);
+            if (idx >= 0) job.results[idx] = errResult;
+            else job.results.push(errResult);
+          } finally {
+            if (!jobHasActiveAgent(job)) {
+              // A Force stop during this retry already set "cancelled" — don't
+              // let the retry's own settle overwrite that with done/error.
+              if (job.status !== "cancelled") {
+                job.status = job.results.some((r) => r.status === "ok")
+                  ? "done"
+                  : "error";
+              }
+              busyJobId = null;
+            }
+            touch(job);
+          }
+        })();
+
+        json(res, 202, { ok: true, jobId: job.id, agent });
+        return;
+      }
+
       if (method === "GET" && url.pathname.startsWith("/api/jobs/")) {
         const id = url.pathname.slice("/api/jobs/".length);
         const job = jobs.get(id);
@@ -2705,6 +3066,7 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
             : {}),
         };
         jobs.set(job.id, job);
+        const versionGate = gateForJob(job.id);
         busyJobId = job.id;
         appendLog(job, `Job ${job.id}`);
         appendLog(job, `Watch: http://127.0.0.1:${port}/#job=${job.id}`);
@@ -2732,6 +3094,7 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
               repoRoot,
               config,
               agents,
+              versionGate,
               ...(extraInstructions.trim()
                 ? { extraInstructions: extraInstructions.trim() }
                 : {}),
@@ -2771,24 +3134,37 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
             job.prNumber = result.prNumber;
             job.outputDir = result.outputDir;
             job.mergedFindingCount = result.mergedFindingCount;
-            job.results = result.results;
-            syncTracksFromResults(job.progress, result.results);
-            job.status = result.cancelled ? "cancelled" : "done";
+            // Once a solo retry has taken ownership of an agent (see
+            // /api/jobs/:id/retry-agent), this batch's stale outcome for it must
+            // never overwrite the retry's track/result again.
+            const owned = retryOwnedSetFor(job.id);
+            const settledResults = result.results.filter(
+              (r) => !owned.has(r.agent),
+            );
+            for (const r of settledResults) {
+              const idx = job.results.findIndex((row) => row.agent === r.agent);
+              if (idx >= 0) job.results[idx] = r;
+              else job.results.push(r);
+            }
+            syncTracksFromResults(job.progress, settledResults);
+            if (!retryInFlight(job)) {
+              job.status = result.cancelled ? "cancelled" : "done";
+            }
             appendLog(
               job,
               result.cancelled
                 ? `Stopped. Partial merge at reviews/${result.prNumber}/ (${result.mergedFindingCount} findings)`
                 : `Merged findings: ${result.mergedFindingCount} → /pr/${result.prNumber}/`,
             );
-            const ok = result.results.filter((r) => r.status === "ok").length;
-            const err = result.results.filter((r) => r.status === "error").length;
+            const ok = settledResults.filter((r) => r.status === "ok").length;
+            const err = settledResults.filter((r) => r.status === "error").length;
             if (err > 0 && ok > 0) {
               appendLog(
                 job,
                 `Partial success: ${ok} agent(s) ok, ${err} failed — review still finished with what we have.`,
               );
             }
-            for (const r of result.results) {
+            for (const r of settledResults) {
               if (r.status === "error") {
                 appendLog(job, `  ✗ ${r.agent}: ${r.detail}`);
               } else if (r.status === "ok") {
@@ -2799,13 +3175,15 @@ export async function serveUi(options: ServeUiOptions): Promise<void> {
               }
             }
           } catch (error) {
-            job.status = "error";
-            job.error =
-              error instanceof Error ? error.message : String(error);
-            appendLog(job, `FAILED: ${job.error}`);
+            const message = error instanceof Error ? error.message : String(error);
+            appendLog(job, `FAILED: ${message}`);
+            if (!retryInFlight(job)) {
+              job.status = "error";
+              job.error = message;
+            }
           } finally {
             touch(job);
-            busyJobId = null;
+            if (!retryInFlight(job)) busyJobId = null;
           }
         })();
 

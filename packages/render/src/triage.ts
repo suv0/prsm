@@ -1,4 +1,5 @@
 import type { Finding, RecheckEntry, ReviewRun } from "@review-os/schemas";
+import { dispositionFromVerification } from "@review-os/schemas";
 import { normalizeTeachMeContent } from "@review-os/core";
 import { githubFileUrl } from "./github-file-link.js";
 import { renderOverviewHtml } from "./overview.js";
@@ -11,6 +12,7 @@ import {
 } from "./agent-nav.js";
 import { iconHtml, iconTextHtml, ICON_INNER } from "./ui-icons.js";
 import { sortFindingsForTriage } from "./sort-findings.js";
+import { Help, tip } from "./ui-help.js";
 
 function escapeHtml(value: string): string {
   return value
@@ -34,8 +36,17 @@ type TriageFinding = {
   githubUrl?: string;
   severity: Finding["severity"];
   category: string;
-  disposition: "open" | "false_alarm";
+  disposition: "open" | "false_alarm" | "fixed";
   falseAlarmNote?: string;
+  verificationStatus?: string;
+  verificationSummary?: string;
+  externalMatch?: {
+    author: string;
+    url?: string;
+    threadExcerpt: string;
+    action: "skip" | "follow_up";
+    followUpComment?: string;
+  };
   issueSimple: string;
   whyWeak: string;
   howToFix: string;
@@ -67,9 +78,30 @@ function toTriageFinding(
     ...(githubUrl ? { githubUrl } : {}),
     severity: finding.severity,
     category: finding.category,
-    disposition: finding.disposition ?? "open",
+    disposition: dispositionFromVerification(finding),
     ...(finding.falseAlarmNote !== undefined
       ? { falseAlarmNote: finding.falseAlarmNote }
+      : {}),
+    ...(finding.verification
+      ? {
+          verificationStatus: finding.verification.status,
+          verificationSummary: finding.verification.summary,
+        }
+      : {}),
+    ...(finding.externalMatch
+      ? {
+          externalMatch: {
+            author: finding.externalMatch.author,
+            ...(finding.externalMatch.url
+              ? { url: finding.externalMatch.url }
+              : {}),
+            threadExcerpt: finding.externalMatch.threadExcerpt,
+            action: finding.externalMatch.action,
+            ...(finding.externalMatch.followUpComment
+              ? { followUpComment: finding.externalMatch.followUpComment }
+              : {}),
+          },
+        }
       : {}),
     issueSimple: finding.issueSimple,
     whyWeak: finding.whyWeak,
@@ -136,6 +168,11 @@ function clientScript(): string {
     progress: document.getElementById("progress-text"),
     sev: document.getElementById("sev-badge"),
     faBadge: document.getElementById("fa-badge"),
+    fixedBadge: document.getElementById("fixed-badge"),
+    externalMatchBox: document.getElementById("external-match-box"),
+    externalMatchAuthor: document.getElementById("external-match-author"),
+    externalMatchExcerpt: document.getElementById("external-match-excerpt"),
+    externalMatchNote: document.getElementById("external-match-note"),
     title: document.getElementById("finding-title"),
     meta: document.getElementById("finding-meta"),
     issue: document.getElementById("issue-simple"),
@@ -168,6 +205,8 @@ function clientScript(): string {
     verifyLive: document.getElementById("verify-live"),
     verifyLogs: document.getElementById("verify-logs"),
     verifyPanel: document.getElementById("verify-panel"),
+    verifyFold: document.getElementById("verify-fold"),
+    verifyCloseBtn: document.getElementById("btn-verify-close"),
     serveHint: document.getElementById("serve-hint"),
   };
 
@@ -214,13 +253,28 @@ function clientScript(): string {
     return f.disposition === "false_alarm";
   }
 
+  function isVerifyFixed(f) {
+    return (
+      f.disposition === "fixed" ||
+      f.verificationStatus === "resolved" ||
+      f.verificationStatus === "accepted"
+    );
+  }
+
+  /** Fixed via an existing GitHub thread already covering it, not an author code fix. */
+  function isExternallyCovered(f) {
+    return Boolean(
+      f.externalMatch &&
+        f.externalMatch.action === "skip" &&
+        f.verificationStatus !== "resolved" &&
+        f.verificationStatus !== "accepted",
+    );
+  }
+
   function queue() {
     return all.filter(function (f) {
       if (!showFalseAlarms && isFalseAlarm(f)) return false;
-      if (!showResolved && isResolved(f)) return false;
-      if (showFalseAlarms && !showResolved) {
-        // when only viewing false alarms path via toggle, still allow FA items
-      }
+      if (!showResolved && (isResolved(f) || isVerifyFixed(f))) return false;
       return true;
     });
   }
@@ -291,6 +345,9 @@ function clientScript(): string {
       category: f.category,
       disposition: f.disposition || "open",
       falseAlarmNote: f.falseAlarmNote,
+      verificationStatus: f.verificationStatus,
+      verificationSummary: f.verificationSummary,
+      externalMatch: f.externalMatch,
       issueSimple: f.issueSimple,
       whyWeak: f.whyWeak,
       howToFix: f.howToFix,
@@ -467,17 +524,19 @@ function clientScript(): string {
     clampIndex();
     var q = queue();
     var f = current();
-    var resolvedCount = state.resolved.length;
+    var markedDoneCount = state.resolved.length;
     var falseAlarmCount = all.filter(isFalseAlarm).length;
+    var fixedCount = all.filter(isVerifyFixed).length;
     var openCount = all.filter(function (item) {
-      return !isFalseAlarm(item) && !isResolved(item);
+      return !isFalseAlarm(item) && !isVerifyFixed(item) && !isResolved(item);
     }).length;
 
     if (els.progress) {
       els.progress.textContent =
         "Open " + openCount +
+        " · Fixed " + fixedCount +
         " · False alarms " + falseAlarmCount +
-        " · Resolved " + resolvedCount +
+        " · Marked done " + markedDoneCount +
         (f ? " · Card " + (queueIndex + 1) + " / " + q.length : "");
     }
     renderQueue();
@@ -493,15 +552,51 @@ function clientScript(): string {
 
     var resolved = isResolved(f);
     var falseAlarm = isFalseAlarm(f);
+    var verifyFixed = isVerifyFixed(f);
+    var externallyCovered = isExternallyCovered(f);
     if (els.sev) {
       els.sev.textContent = f.severity;
       els.sev.setAttribute("data-severity", f.severity);
     }
     if (els.faBadge) els.faBadge.hidden = !falseAlarm;
+    if (els.fixedBadge) {
+      els.fixedBadge.hidden = !verifyFixed || falseAlarm;
+      els.fixedBadge.textContent = externallyCovered ? "Already flagged" : "Fixed";
+    }
+    if (els.externalMatchBox) {
+      var em = f.externalMatch;
+      els.externalMatchBox.hidden = !em;
+      if (em) {
+        if (els.externalMatchAuthor) {
+          els.externalMatchAuthor.innerHTML = "";
+          if (em.url) {
+            var emLink = document.createElement("a");
+            emLink.href = em.url;
+            emLink.target = "_blank";
+            emLink.rel = "noopener noreferrer";
+            emLink.textContent = "@" + em.author;
+            els.externalMatchAuthor.appendChild(emLink);
+          } else {
+            els.externalMatchAuthor.textContent = "@" + em.author;
+          }
+        }
+        if (els.externalMatchExcerpt) {
+          els.externalMatchExcerpt.textContent = em.threadExcerpt || "";
+        }
+        if (els.externalMatchNote) {
+          els.externalMatchNote.textContent =
+            em.action === "follow_up" && em.followUpComment
+              ? "Follow-up (adds to what's already said): " + em.followUpComment
+              : "Already covered — no comment needed here.";
+        }
+      }
+    }
     if (els.title) {
       els.title.textContent = falseAlarm
         ? "False alarm — was " + f.severity
-        : (f.kind === "praise" ? "Praise" : "Finding") + " — " + f.severity;
+        : verifyFixed
+          ? (externallyCovered ? "Already flagged — was " : "Fixed — was ") + f.severity
+          : (f.kind === "praise" ? "Praise" : "Finding") + " — " + f.severity;
     }
     if (els.meta) {
       var label = lineLabel(f);
@@ -520,7 +615,9 @@ function clientScript(): string {
     if (els.issue) {
       els.issue.textContent = falseAlarm && f.falseAlarmNote
         ? f.falseAlarmNote
-        : f.issueSimple;
+        : verifyFixed && f.verificationSummary
+          ? f.verificationSummary
+          : f.issueSimple;
     }
     paintTeachSimple(f);
     renderEditor(els.code, {
@@ -963,66 +1060,47 @@ function clientScript(): string {
       ? els.comment.value.trim()
       : (f.reviewComment || "");
     var line = lineLabel(f);
-    var rechecks = Array.isArray(f.rechecks) ? f.rechecks : [];
-    var history = rechecks.length
-      ? rechecks.map(function (entry, idx) {
-          return [
-            "### Recheck " + (idx + 1) + " — " + (entry.action || "") + " · " + (entry.provider || "") + " · " + (entry.createdAt || ""),
-            "You asked:",
-            entry.userAsked || "",
-            "",
-            "AI understood:",
-            entry.understood || "",
-            "",
-            "Finding:",
-            entry.conclusion || "",
-            entry.details ? "\\nDetails:\\n" + entry.details : "",
-            entry.suggestedComment ? "\\nSuggested paste comment:\\n" + entry.suggestedComment : "",
-          ].filter(Boolean).join("\\n");
-        }).join("\\n\\n")
-      : "(none yet)";
+    var lang = f.language || "ts";
     return [
-      "Please help with this PR review finding. Use the full recheck thread below as context.",
+      "You are helping the PR author fix a review finding in their own branch.",
+      "Read the current code at the cited file/lines, decide if the finding is real,",
+      "and if so apply a minimal focused fix. Skip it (with a one-line why) if it is a false alarm or already fixed.",
       "",
       "PR #" + PR,
       "Finding id: " + f.id,
+      "Kind: " + (f.kind || "issue"),
       "Disposition: " + (f.disposition || "open"),
       "Severity: " + f.severity,
       "Category: " + f.category,
       "File: " + f.file,
       "Line: " + line,
+      "Confidence: " + Math.round((f.confidence || 0) * 100) + "% · Importance: " + (f.importance || 0) + "/10",
       "",
-      "## Issue (simple)",
+      "## Issue",
       f.issueSimple || "",
       "",
-      "## Why weak",
+      "## Why it matters",
       f.whyWeak || "",
       "",
       "## How to fix",
       f.howToFix || "",
       "",
       "## Current code",
-      "\`\`\`",
+      "\`\`\`" + lang,
       f.currentCode || "",
       "\`\`\`",
       "",
-      "## Better code",
-      "\`\`\`",
+      "## Suggested code",
+      "\`\`\`" + lang,
       f.betterCode || "",
       "\`\`\`",
       "",
-      "## Current paste comment (may be edited by reviewer)",
-      comment,
+      "## Reviewer comment (context only — do not paste to GitHub unless asked)",
+      comment || "(none)",
+      notes ? "\\n## Author notes\\n" + notes : "",
       "",
-      "## Draft notes (not submitted yet)",
-      notes || "(none)",
-      "",
-      "## Recheck history (newest first — full thread)",
-      history,
-      "",
-      "Reply with: stand | update (what to change) | false alarm (why).",
-      "If asked for a GitHub paste comment, give 1–3 short polite sentences (Could we…?).",
-    ].join("\\n");
+      "Do not rewrite unrelated code. Prefer the suggested approach when it matches the repo style.",
+    ].filter(Boolean).join("\\n");
   }
 
   async function copyForAgent() {
@@ -1031,7 +1109,7 @@ function clientScript(): string {
     var text = buildAgentPacket(f);
     try {
       await navigator.clipboard.writeText(text);
-      showFlash("Copied finding for another agent");
+      showFlash("Copied fix brief — paste into your coding agent");
     } catch (e) {
       showFlash("Copy failed");
     }
@@ -1148,17 +1226,41 @@ function clientScript(): string {
       .filter(Boolean);
   }
 
+  function openVerifyFold() {
+    if (els.verifyFold) els.verifyFold.open = true;
+  }
+
+  function closeVerifyFold() {
+    if (els.verifyFold) els.verifyFold.open = false;
+  }
+
+  function dismissVerifyUi() {
+    closeVerifyFold();
+    if (els.verifyPanel) els.verifyPanel.hidden = true;
+    if (els.verifyStatus) {
+      els.verifyStatus.hidden = true;
+      els.verifyStatus.textContent = "";
+    }
+    if (els.verifyLive) {
+      els.verifyLive.hidden = true;
+      els.verifyLive.textContent = "";
+    }
+    if (els.verifyLogs) els.verifyLogs.textContent = "";
+  }
+
   function setVerifyUiRunning(running) {
     verifying = Boolean(running);
     if (els.verifyBtn) {
       els.verifyBtn.disabled = running || !SERVED;
-      setBtnLabel(els.verifyBtn, running ? "Verifying…" : "Verify author updates");
+      setBtnLabel(els.verifyBtn, running ? "Verifying…" : "Verify this finding");
     }
+    if (running) openVerifyFold();
     if (els.verifyPanel) els.verifyPanel.hidden = false;
   }
 
   function renderVerifyJob(job) {
     if (!job) return;
+    openVerifyFold();
     if (els.verifyPanel) els.verifyPanel.hidden = false;
     var progress = job.progress;
     var headline =
@@ -1290,6 +1392,15 @@ function clientScript(): string {
 
   async function verifyAuthorUpdates() {
     if (!SERVED || verifying || rechecking) return;
+    var f = current();
+    if (!f) {
+      showFlash("No open finding to verify");
+      return;
+    }
+    if (isFalseAlarm(f) || isVerifyFixed(f)) {
+      showFlash("This card is already closed — pick an open finding");
+      return;
+    }
     var agents = selectedVerifyAgents();
     if (!agents.length) {
       showFlash("Pick at least one agent for verify");
@@ -1300,7 +1411,8 @@ function clientScript(): string {
     if (els.verifyStatus) {
       els.verifyStatus.hidden = false;
       els.verifyStatus.className = "verify-status running";
-      els.verifyStatus.textContent = "Starting verify with " + agents.join(", ") + "…";
+      els.verifyStatus.textContent =
+        "Verifying this finding with " + agents.join(", ") + "…";
     }
     if (els.verifyLive) {
       els.verifyLive.hidden = false;
@@ -1311,7 +1423,7 @@ function clientScript(): string {
       var res = await fetch(apiUrl("/verify"), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ providers: agents }),
+        body: JSON.stringify({ providers: agents, findingIds: [f.id] }),
       });
       var body = await res.json();
       if (res.status === 409 && body.jobId) {
@@ -1642,6 +1754,16 @@ function clientScript(): string {
   if (els.verifyBtn) {
     els.verifyBtn.addEventListener("click", verifyAuthorUpdates);
   }
+  if (els.verifyCloseBtn) {
+    els.verifyCloseBtn.addEventListener("click", function () {
+      // Always allow collapse — job keeps running; reopen the fold to watch logs.
+      if (verifying) {
+        closeVerifyFold();
+        return;
+      }
+      dismissVerifyUi();
+    });
+  }
   document.getElementById("btn-false-alarm").addEventListener("click", function () {
     setDisposition("false_alarm");
   });
@@ -1676,9 +1798,25 @@ function clientScript(): string {
     }
   });
 
+  async function refreshFindingsFromServer() {
+    if (!SERVED) return;
+    try {
+      var res = await fetch(apiUrl("/findings"));
+      if (!res.ok) return;
+      var body = await res.json();
+      if (body && Array.isArray(body.findings)) {
+        all = body.findings.map(findingFromApi);
+      }
+    } catch (e) { /* keep embedded payload */ }
+  }
+
   loadProviders();
   attachActiveVerify();
   attachActiveRecheck();
+  refreshFindingsFromServer().then(function () {
+    clampIndex();
+    paint();
+  });
   paint();
 })();
 </script>`;
@@ -1898,26 +2036,40 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
     .verify-fold {
       margin-left: auto;
     }
+    /* Full-width row under counts — never float over the finding card */
+    .verify-fold[open] {
+      flex: 1 1 100%;
+      margin-left: 0;
+    }
     .verify-fold > summary {
       list-style: none;
       color: var(--accent);
       font-weight: 600;
       font-size: 12px;
       cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
     }
     .verify-fold > summary::-webkit-details-marker { display: none; }
     .verify-fold .verify-body {
-      position: absolute;
-      right: 20px;
-      margin-top: 6px;
-      z-index: 5;
-      min-width: 280px;
+      margin-top: 8px;
+      width: 100%;
+      box-sizing: border-box;
       padding: 12px;
       background: var(--card);
       border: 1px solid var(--line);
       border-radius: 4px;
     }
-    .stage-tools { position: relative; }
+    .verify-body-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 0.55rem;
+    }
+    .verify-body-head .verify-hint { margin: 0; flex: 1; max-width: none; }
+    #btn-verify-close { flex-shrink: 0; }
     #progress-text { font-weight: 600; color: #fff; }
     .hint { color: var(--muted); font-size: 0.88rem; }
     #flash, #serve-hint {
@@ -1954,6 +2106,7 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
     }
     .badge[hidden],
     #fa-badge[hidden],
+    #fixed-badge[hidden],
     button[hidden],
     #empty[hidden],
     #panel[hidden],
@@ -2281,8 +2434,19 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       padding: 8px 20px;
       background: var(--bg-elevated);
       border-top: 1px solid var(--line);
+      min-width: 0;
+      overflow: visible;
     }
-    .bottom-nav .kbd-hint { margin-right: auto; color: var(--muted); font-size: 12px; }
+    .bottom-nav button {
+      flex: 0 1 auto;
+    }
+    .bottom-nav .kbd-hint {
+      margin-right: auto;
+      color: var(--muted);
+      font-size: 12px;
+      flex: 1 1 140px;
+      min-width: 0;
+    }
     kbd {
       display: inline-block; padding: 0 5px; border: 1px solid var(--line);
       border-radius: 3px; font: 11px "JetBrains Mono", ui-monospace, monospace;
@@ -2358,7 +2522,33 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       color: #dcdcaa;
       margin-left: 0.35rem;
     }
+    .badge-fixed {
+      background: #1a3320;
+      border-color: #3d7a45;
+      color: #b5e8b8;
+      margin-left: 0.35rem;
+    }
     #panel.is-false-alarm { border-left-color: #dcdcaa; }
+    section.external-match {
+      margin: 0 0 1rem;
+      padding: 0.5rem 0.7rem;
+      border: 1px solid #6b5a1f;
+      background: #241f10;
+      border-radius: 6px;
+    }
+    .external-match-badge {
+      margin: 0 0 0.3rem;
+      color: #e0c46a;
+      font-weight: 600;
+      font-size: 0.85rem;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .external-match-badge a { color: #e0c46a; text-decoration: underline; }
+    section.external-match p { margin: 0.25rem 0; }
+    .verify-hint { margin: 0 0 0.55rem; max-width: 28rem; }
+    .verify-hint a { color: var(--accent); }
     .verify-panel {
       background: var(--bg-elevated);
       border: 1px solid var(--line);
@@ -2442,11 +2632,11 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
 <body class="wb-page">
   ${workspaceChromeOpenHtml({ prNumber: run.prNumber, active: "triage" })}
   <div class="triage-shell">
-    <aside class="queue-pane">
-      <div class="queue-head"><span class="queue-head-label">${iconHtml("list")} Queue</span> <span id="queue-count">…</span></div>
+    <aside class="queue-pane" ${tip(Help.queuePane)}>
+      <div class="queue-head"><span class="queue-head-label">${iconHtml("list")} Queue</span> <span id="queue-count" ${tip(Help.queueCount)}>…</span></div>
       <div class="queue-filters">
-        <label class="toggle"><input type="checkbox" id="show-resolved" /> Include resolved</label>
-        <label class="toggle"><input type="checkbox" id="show-false-alarms" /> Include false alarms</label>
+        <label class="toggle" ${tip(Help.includeResolved)}><input type="checkbox" id="show-resolved" /> Include resolved / fixed</label>
+        <label class="toggle" ${tip(Help.includeFalseAlarms)}><input type="checkbox" id="show-false-alarms" /> Include false alarms</label>
       </div>
       <div id="finding-queue"></div>
     </aside>
@@ -2458,12 +2648,16 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
         </div>
         ${agentFindingsNavHtml(run, escapeHtml)}
         <div class="stage-tools">
-          <span id="progress-text">…</span>
-          <details class="verify-fold">
-            <summary>${iconHtml("shield-check")} Verify updates</summary>
+          <span id="progress-text" class="has-tip" ${tip(Help.progressCounts)}>…</span>
+          <details class="verify-fold" id="verify-fold">
+            <summary ${tip(Help.verifyThis)}>${iconHtml("shield-check")} Verify this finding</summary>
             <div class="verify-body">
-              <div class="verify-agents" id="verify-agents" aria-label="Agents for verify"></div>
-              <button type="button" id="btn-verify" disabled>${iconTextHtml("shield-check", "Verify author updates")}</button>
+              <div class="verify-body-head">
+                <p class="hint verify-hint">Checks <strong>only the card on screen</strong> against the latest PR. Pick an agent, then run. For all open findings, use <a href="final-review.html">List → Verify all open</a>.</p>
+                <button type="button" class="btn-secondary" id="btn-verify-close" ${tip(Help.verifyClose)}>${iconTextHtml("x-circle", "Close")}</button>
+              </div>
+              <div class="verify-agents" id="verify-agents" aria-label="Agents for verify" ${tip(Help.verifyAgents)}></div>
+              <button type="button" id="btn-verify" disabled ${tip(Help.verifyThisBtn)}>${iconTextHtml("shield-check", "Verify this finding")}</button>
               <section id="verify-panel" class="verify-panel" hidden>
                 <p id="verify-status" class="verify-status"></p>
                 <p id="verify-live" class="hint" hidden></p>
@@ -2475,7 +2669,7 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       </header>
       <div class="stage-scroll">
   <main>
-    ${run.overview ? `<details class="overview-fold"><summary>${iconHtml("book-open")} PR overview</summary>${renderOverviewHtml(run.overview, escapeHtml)}</details>` : ""}
+    ${run.overview ? `<details class="overview-fold"><summary ${tip(Help.overviewFold)}>${iconHtml("book-open")} PR overview</summary>${renderOverviewHtml(run.overview, escapeHtml)}</details>` : ""}
     <p id="serve-hint" hidden></p>
     <p id="flash" hidden></p>
 
@@ -2486,47 +2680,54 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
 
     <article id="panel" hidden>
       <header>
-        <span class="badge" id="sev-badge">—</span>
-        <span class="badge badge-fa" id="fa-badge" hidden>False alarm</span>
+        <span class="badge" id="sev-badge" ${tip(Help.badgeSeverity)}>—</span>
+        <span class="badge badge-fa" id="fa-badge" hidden ${tip(Help.badgeFalseAlarm)}>False alarm</span>
+        <span class="badge badge-fixed" id="fixed-badge" hidden ${tip(Help.badgeFixed)}>Fixed</span>
         <h2 id="finding-title">Finding</h2>
         <p class="meta" id="finding-meta"></p>
       </header>
 
       <section>
-        <h3>Issue</h3>
+        <h3 class="has-tip" ${tip(Help.sectionIssue)}>Issue</h3>
         <p id="issue-simple"></p>
       </section>
 
+      <section class="external-match" id="external-match-box" hidden>
+        <p class="external-match-badge" ${tip(Help.badgeExternalMatch)}>${iconTextHtml("message-circle", "Already flagged")} <span id="external-match-author"></span></p>
+        <p class="meta" id="external-match-excerpt"></p>
+        <p id="external-match-note"></p>
+      </section>
+
       <section>
-        <h3>Current code</h3>
+        <h3 class="has-tip" ${tip(Help.sectionCurrentCode)}>Current code</h3>
         <div class="toolbar">
-          <button type="button" class="btn-secondary" id="btn-copy-current-code">${iconTextHtml("copy", "Copy code")}</button>
-          <button type="button" class="btn-secondary" id="btn-copy-agent-top">${iconTextHtml("clipboard", "Copy for agent")}</button>
+          <button type="button" class="btn-secondary" id="btn-copy-current-code" ${tip(Help.copyCode)}>${iconTextHtml("copy", "Copy code")}</button>
+          <button type="button" class="btn-secondary" id="btn-copy-agent-top" ${tip(Help.copyFixBrief)}>${iconTextHtml("clipboard", "Copy fix brief")}</button>
         </div>
         <div class="editor-host" id="current-code"></div>
       </section>
 
       <section>
         <div class="suggest-head">
-          <h3>Suggested comment</h3>
+          <h3 class="has-tip" ${tip(Help.sectionComment)}>Suggested comment</h3>
           <div class="toolbar">
-            <button type="button" class="btn-secondary" id="btn-reset-comment">${iconTextHtml("rotate-ccw", "Reset")}</button>
-            <button type="button" class="btn-secondary" id="btn-copy-comment">${iconTextHtml("copy", "Copy")}</button>
-            <button type="button" id="btn-save-comment">${iconTextHtml("save", "Save")}</button>
+            <button type="button" class="btn-secondary" id="btn-reset-comment" ${tip(Help.resetComment)}>${iconTextHtml("rotate-ccw", "Reset")}</button>
+            <button type="button" class="btn-secondary" id="btn-copy-comment" ${tip(Help.copyComment)}>${iconTextHtml("copy", "Copy")}</button>
+            <button type="button" id="btn-save-comment" ${tip(Help.saveComment)}>${iconTextHtml("save", "Save")}</button>
           </div>
         </div>
-        <textarea id="simple-comment" rows="5" placeholder="Short polite comment…"></textarea>
+        <textarea id="simple-comment" rows="5" placeholder="Short polite comment…" ${tip(Help.sectionComment)}></textarea>
         <details>
-          <summary>Original generated comment</summary>
+          <summary ${tip(Help.originalComment)}>Original generated comment</summary>
           <div class="toolbar">
-            <button type="button" class="btn-secondary" id="btn-copy-original">${iconTextHtml("copy", "Copy original")}</button>
+            <button type="button" class="btn-secondary" id="btn-copy-original" ${tip(Help.originalComment)}>${iconTextHtml("copy", "Copy original")}</button>
           </div>
           <pre class="comment-body" id="original-comment"></pre>
         </details>
       </section>
 
       <details class="block">
-        <summary>${iconHtml("sliders")} Details (why / fix / better code)</summary>
+        <summary ${tip(Help.detailsFold)}>${iconHtml("sliders")} Details (why / fix / better code)</summary>
         <section>
           <h3>Why this is weak</h3>
           <p id="why-weak"></p>
@@ -2538,42 +2739,42 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
         <section>
           <h3>Better code</h3>
           <div class="toolbar">
-            <button type="button" class="btn-secondary" id="btn-copy-better-code">${iconTextHtml("copy", "Copy better code")}</button>
+            <button type="button" class="btn-secondary" id="btn-copy-better-code" ${tip(Help.copyBetter)}>${iconTextHtml("copy", "Copy better code")}</button>
           </div>
           <div class="editor-host" id="better-code"></div>
         </section>
       </details>
 
       <details class="block">
-        <summary>${iconHtml("graduation-cap")} Teach me (Generate lesson)</summary>
+        <summary ${tip(Help.teachFold)}>${iconHtml("graduation-cap")} Teach me (Generate lesson)</summary>
         <section class="teach-section">
         <div class="teach-head">
           <h3>Explain simply</h3>
-          <button type="button" id="btn-copy-teach">${iconTextHtml("copy", "Copy lesson")}</button>
+          <button type="button" id="btn-copy-teach" ${tip(Help.copyLesson)}>${iconTextHtml("copy", "Copy lesson")}</button>
         </div>
         <p class="hint">A plain walkthrough of this finding. Teach me runs one agent for a teammate-style lesson, then saves it in Recheck history.</p>
         <div id="teach-simple" class="teach-simple"></div>
         <div class="toolbar teach-actions" style="margin-top:0.5rem">
-          <label for="provider-teach" class="teach-provider-label">Agent</label>
-          <select id="provider-teach" aria-label="Teach me agent"></select>
-          <button type="button" id="btn-teach-me" disabled>${iconTextHtml("graduation-cap", "Teach me")}</button>
-          <button type="button" class="btn-secondary" id="btn-copy-teach-bottom">${iconTextHtml("copy", "Copy lesson")}</button>
+          <label for="provider-teach" class="teach-provider-label" ${tip(Help.teachAgent)}>Agent</label>
+          <select id="provider-teach" aria-label="Teach me agent" ${tip(Help.teachAgent)}></select>
+          <button type="button" id="btn-teach-me" disabled ${tip(Help.teachMe)}>${iconTextHtml("graduation-cap", "Teach me")}</button>
+          <button type="button" class="btn-secondary" id="btn-copy-teach-bottom" ${tip(Help.copyLesson)}>${iconTextHtml("copy", "Copy lesson")}</button>
         </div>
         </section>
       </details>
 
       <details class="block" open>
-        <summary>${iconHtml("message-circle")} Recheck (Ask follow-up)</summary>
+        <summary ${tip(Help.recheckFold)}>${iconHtml("message-circle")} Recheck (Ask follow-up)</summary>
       <section>
         <p class="hint">Ask a follow-up. Answers land in Recheck history.</p>
-        <textarea id="notes" rows="3" placeholder="e.g., Does wrapping it in db.transaction() solve this entirely?"></textarea>
+        <textarea id="notes" rows="3" placeholder="e.g., Does wrapping it in db.transaction() solve this entirely?" ${tip(Help.recheckFold)}></textarea>
         <div class="provider-row">
-          <label for="provider">Provider</label>
-          <select id="provider" aria-label="Provider">
+          <label for="provider" ${tip(Help.recheckProvider)}>Provider</label>
+          <select id="provider" aria-label="Provider" ${tip(Help.recheckProvider)}>
             <option value="">Loading…</option>
           </select>
-          <button type="button" id="btn-recheck" disabled>${iconTextHtml("message-circle", "Ask")}</button>
-          <button type="button" class="btn-secondary" id="btn-copy-notes">${iconTextHtml("copy", "Copy notes")}</button>
+          <button type="button" id="btn-recheck" disabled ${tip(Help.recheckAsk)}>${iconTextHtml("message-circle", "Ask")}</button>
+          <button type="button" class="btn-secondary" id="btn-copy-notes" ${tip(Help.copyNotes)}>${iconTextHtml("copy", "Copy notes")}</button>
         </div>
         <div id="recheck-live-panel" class="recheck-live-panel" hidden>
           <p class="hint" style="margin:0 0 0.35rem"><strong>Live run</strong> — disappears when finished; the result card is saved in history.</p>
@@ -2584,7 +2785,7 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
       </section>
       </details>
       <details class="block">
-        <summary>${iconHtml("layers")} Recheck history</summary>
+        <summary ${tip(Help.recheckHistory)}>${iconHtml("layers")} Recheck history</summary>
         <p class="hint" style="margin-top:0">Newest first.</p>
         <div id="recheck-history"></div>
       </details>
@@ -2592,14 +2793,14 @@ export function renderFinalReviewTriage(run: ReviewRun): string {
   </main>
       </div>
     <nav class="bottom-nav" aria-label="Triage navigation">
-      <span class="kbd-hint"><kbd>j</kbd> <kbd>k</kbd> navigate · <kbd>R</kbd> resolve</span>
-      <button type="button" class="btn-secondary" id="btn-back">${iconTextHtml("chevron-left", "Back")}</button>
-      <button type="button" class="btn-secondary" id="btn-false-alarm" hidden>${iconTextHtml("bell-off", "False Alarm")}</button>
-      <button type="button" class="btn-secondary" id="btn-copy-agent">${iconTextHtml("clipboard", "Copy for agent")}</button>
-      <button type="button" class="btn-secondary" id="btn-restore" hidden>${iconTextHtml("undo", "Restore")}</button>
-      <button type="button" class="btn-secondary" id="btn-reopen" hidden>${iconTextHtml("rotate-ccw", "Reopen")}</button>
-      <button type="button" class="btn-secondary" id="btn-resolve">${iconTextHtml("check", "Resolved")}</button>
-      <button type="button" id="btn-next">${iconTextHtml("chevron-right", "Next finding")}</button>
+      <span class="kbd-hint has-tip" ${tip(Help.kbdHint)}><kbd>j</kbd> <kbd>k</kbd> navigate · <kbd>R</kbd> resolve</span>
+      <button type="button" class="btn-secondary" id="btn-back" ${tip(Help.navBack)}>${iconTextHtml("chevron-left", "Back")}</button>
+      <button type="button" class="btn-secondary" id="btn-false-alarm" hidden ${tip(Help.falseAlarm)}>${iconTextHtml("bell-off", "False Alarm")}</button>
+      <button type="button" class="btn-secondary" id="btn-copy-agent" ${tip(Help.copyFixBrief)}>${iconTextHtml("clipboard", "Copy fix brief")}</button>
+      <button type="button" class="btn-secondary" id="btn-restore" hidden ${tip(Help.restoreBrowser)}>${iconTextHtml("undo", "Restore")}</button>
+      <button type="button" class="btn-secondary" id="btn-reopen" hidden ${tip(Help.reopen)}>${iconTextHtml("rotate-ccw", "Reopen")}</button>
+      <button type="button" class="btn-secondary" id="btn-resolve" ${tip(Help.resolveBrowser)}>${iconTextHtml("check", "Resolved")}</button>
+      <button type="button" id="btn-next" ${tip(Help.navNext)}>${iconTextHtml("chevron-right", "Next finding")}</button>
     </nav>
     </div>
   </div>

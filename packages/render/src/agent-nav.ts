@@ -1,5 +1,6 @@
 import type { AgentRunSummary, ReviewRun } from "@review-os/schemas";
 import { iconHtml, iconTextHtml } from "./ui-icons.js";
+import { Help, tip, uiHelpScript } from "./ui-help.js";
 import {
   sidebarChromeCss,
   sidebarToggleButtonHtml,
@@ -195,13 +196,14 @@ export function workspaceChromeOpenHtml(options: {
     href: string,
     icon: "zap" | "list-checks" | "list" | "shield-check",
     label: string,
+    help: string,
     disabled = false,
   ) => {
     const inner = `${iconHtml(icon)}<span>${label}</span>`;
     if (disabled) {
-      return `<a href="#" class="is-disabled" aria-disabled="true" title="Not available yet">${inner}</a>`;
+      return `<a href="#" class="is-disabled" aria-disabled="true" ${tip(Help.tabVerifySoon)}>${inner}</a>`;
     }
-    return `<a href="${href}"${id === options.active ? ' class="is-active"' : ""}>${inner}</a>`;
+    return `<a href="${href}"${id === options.active ? ' class="is-active"' : ""} ${tip(help)}>${inner}</a>`;
   };
   const verifyHref = `/pr/${n}/verify-report.html`;
   return `<div class="wb-app">
@@ -215,22 +217,22 @@ export function workspaceChromeOpenHtml(options: {
         ${sidebarToggleButtonHtml()}
       </div>
       <nav class="wb-nav">
-        <a href="/#home"${sideClass("home")} title="Home" aria-label="Home">${iconTextHtml("home", "Home", "nav-label")}</a>
-        <a href="/#run"${sideClass("run")} title="New Review" aria-label="New Review">${iconTextHtml("plus", "New Review", "nav-label")}</a>
-        <a href="/#settings"${sideClass("settings")} title="Settings" aria-label="Settings">${iconTextHtml("settings", "Settings", "nav-label")}</a>
+        <a href="/#home"${sideClass("home")} ${tip(Help.navHome)} aria-label="Home">${iconTextHtml("home", "Home", "nav-label")}</a>
+        <a href="/#run"${sideClass("run")} ${tip(Help.navNewReview)} aria-label="New Review">${iconTextHtml("plus", "New Review", "nav-label")}</a>
+        <a href="/#settings"${sideClass("settings")} ${tip(Help.navSettings)} aria-label="Settings">${iconTextHtml("settings", "Settings", "nav-label")}</a>
       </nav>
       <div class="wb-side-foot">
-        <a href="/#live"${sideClass("live")} title="Status" aria-label="Status">${iconTextHtml("activity", "Status", "nav-label")}</a>
+        <a href="/#live"${sideClass("live")} ${tip(Help.navLive)} aria-label="Status">${iconTextHtml("activity", "Status", "nav-label")}</a>
       </div>
     </aside>
     <div class="wb-stage">
       <header class="ws-bar">
-        <a class="ws-brand" href="/">${iconHtml("layers")} PRism Workspace</a>
+        <a class="ws-brand" href="/" ${tip(Help.navHome)}>${iconHtml("layers")} PRism Workspace</a>
         <nav aria-label="Workspace">
-          ${tab("live", "/#live", "zap", "Live run")}
-          ${tab("triage", `/pr/${n}/`, "list-checks", "Triage")}
-          ${tab("list", `/pr/${n}/final-review.html`, "list", "List")}
-          ${tab("verify", verifyHref, "shield-check", "Verify", options.verifyAvailable === false)}
+          ${tab("live", "/#live", "zap", "Live run", Help.tabLive)}
+          ${tab("triage", `/pr/${n}/`, "list-checks", "Triage", Help.tabTriage)}
+          ${tab("list", `/pr/${n}/final-review.html`, "list", "List", Help.tabList)}
+          ${tab("verify", verifyHref, "shield-check", "Report", Help.tabVerify, options.verifyAvailable === false)}
         </nav>
       </header>
       <div class="wb-body">`;
@@ -238,7 +240,8 @@ export function workspaceChromeOpenHtml(options: {
 
 export function workspaceChromeCloseHtml(): string {
   return `</div></div></div>
-<script>${sidebarToggleScript()}</script>`;
+<script>${sidebarToggleScript()}</script>
+<script>${uiHelpScript()}</script>`;
 }
 
 /** @deprecated Prefer open/close shell helpers for full sidebar chrome. */
@@ -266,19 +269,19 @@ export function agentFindingsNavHtml(
   if (agents.length > 0) {
     const mergedActive = !run.agent ? ' class="is-active"' : "";
     parts.push(
-      `<a href="${merged}"${mergedActive}>${iconHtml("layers")} Merged ${mergedCount}</a>`,
+      `<a href="${merged}"${mergedActive} ${tip(Help.mergedNav)}>${iconHtml("layers")} Merged ${mergedCount}</a>`,
     );
     for (const entry of agents) {
       const href = `/pr/${n}/runs/${encodeURIComponent(entry.id)}/triage.html`;
       const active = run.agent === entry.agent ? ' class="is-active"' : "";
       parts.push(
-        `<a href="${href}"${active}>${iconHtml("bot")} ${escapeHtml(entry.agent)} ${entry.findingCount}</a>`,
+        `<a href="${href}"${active} ${tip(`${Help.agentNav} (${entry.agent})`)}>${iconHtml("bot")} ${escapeHtml(entry.agent)} ${entry.findingCount}</a>`,
       );
     }
   } else if (run.agent) {
-    parts.push(`<a href="${merged}">${iconHtml("layers")} Merged</a>`);
+    parts.push(`<a href="${merged}" ${tip(Help.mergedNav)}>${iconHtml("layers")} Merged</a>`);
     parts.push(
-      `<span class="is-active">${iconHtml("bot")} This page: ${escapeHtml(run.agent)} only</span>`,
+      `<span class="is-active has-tip" ${tip(Help.agentNav)}>${iconHtml("bot")} This page: ${escapeHtml(run.agent)} only</span>`,
     );
   }
 

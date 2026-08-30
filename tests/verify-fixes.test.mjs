@@ -96,3 +96,71 @@ test("parseBatchVerifyModelResponse reads array", async () => {
   assert.equal(parsed[0]?.findingId, "a");
   assert.equal(parsed[1]?.status, "still_open");
 });
+
+test("applyVerificationsToRun marks resolved as disposition fixed", async () => {
+  const {
+    applyVerificationsToRun,
+    syncDispositionsFromVerifications,
+    toFindingVerification,
+  } = await import("../packages/core/dist/verify-fixes.js");
+  const run = {
+    prNumber: 1,
+    createdAt: new Date().toISOString(),
+    demo: false,
+    load: {
+      source: "pr",
+      additions: 0,
+      deletions: 0,
+      files: [],
+      diffTruncated: false,
+    },
+    judge: {
+      readiness: "needs_changes",
+      topReasons: ["x"],
+      counts: {
+        blocker: 0,
+        major: 1,
+        minor: 0,
+        nit: 0,
+        suggestion: 0,
+        question: 0,
+        praise: 0,
+      },
+      score: 50,
+    },
+    knowledgeDocs: {},
+    findings: [{ ...finding, disposition: "open" }],
+    passResults: [],
+  };
+  const byId = new Map([
+    [
+      finding.id,
+      [
+        toFindingVerification(
+          {
+            status: "resolved",
+            summary: "Author fixed null guard",
+            betterThanSuggested: false,
+          },
+          { provider: "cursor", threadMatched: true },
+        ),
+      ],
+    ],
+  ]);
+  const next = applyVerificationsToRun(run, byId);
+  assert.equal(next.findings[0].disposition, "fixed");
+  assert.equal(next.findings[0].verification?.status, "resolved");
+
+  const legacy = {
+    ...run,
+    findings: [
+      {
+        ...finding,
+        disposition: "open",
+        verification: next.findings[0].verification,
+      },
+    ],
+  };
+  const repaired = syncDispositionsFromVerifications(legacy);
+  assert.equal(repaired.findings[0].disposition, "fixed");
+});

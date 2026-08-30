@@ -510,7 +510,7 @@ async function main(): Promise<void> {
       [
         `Verified with ${report.provider}`,
         `resolved ${report.counts.resolved} · accepted ${report.counts.accepted} · needs_look ${report.counts.needs_look} · still_open ${report.counts.still_open}`,
-        "Open verify-report.html (or triage → Verify author updates)",
+        "Open verify-report.html (Report tab), or run Verify from Triage / List",
       ].join("\n"),
     );
     return;

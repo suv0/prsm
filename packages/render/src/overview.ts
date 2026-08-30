@@ -1,4 +1,5 @@
 import type { PrOverview, ReviewRun } from "@review-os/schemas";
+import { Help, tip } from "./ui-help.js";
 
 export function overviewFromRun(run: ReviewRun): PrOverview | undefined {
   return run.overview;
@@ -35,7 +36,7 @@ export function renderOverviewHtml(
       ? `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
       : "";
 
-  return `<section class="summary overview">
+  return `<section class="summary overview" ${tip(Help.overviewFold)}>
       <h2>PR overview</h2>
       <p>${escapeHtml(overview.summary)}</p>
       ${

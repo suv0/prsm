@@ -65,7 +65,7 @@ export function buildJudgeResult(findings: Finding[]): JudgeResult {
   };
 
   for (const finding of findings) {
-    if (finding.disposition === "false_alarm") {
+    if (finding.disposition === "false_alarm" || finding.disposition === "fixed") {
       continue;
     }
     if (finding.kind === "praise") {
@@ -87,8 +87,12 @@ export function buildJudgeResult(findings: Finding[]): JudgeResult {
         : "approved_with_nits";
 
   const topReasons = findings
-    .filter((f) => f.kind === "issue" && f.disposition !== "false_alarm")
-    .slice(0, 5)
+    .filter(
+      (f) =>
+        f.kind === "issue" &&
+        f.disposition !== "false_alarm" &&
+        f.disposition !== "fixed",
+    )    .slice(0, 5)
     .map((f) => `${f.severity}: ${f.issueSimple}`);
 
   const scoreValue =

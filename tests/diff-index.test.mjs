@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildDiffIndex,
+  findingCodeStillInDiff,
   reconcileFindingLines,
 } from "../packages/core/dist/diff-index.js";
 
@@ -75,4 +76,45 @@ test("reconcileFindingLines corrects hallucinated line 42 to real line", () => {
   assert.equal(result.corrected.length, 1);
   assert.equal(result.findings[0]?.line, 8);
   assert.equal(result.findings[0]?.evidence[0]?.line, 8);
+});
+
+test("findingCodeStillInDiff detects present vs gone snippets", () => {
+  const base = {
+    id: "f1",
+    kind: "issue",
+    file: "services/backend/src/sms/sms-provider.factory.ts",
+    line: 8,
+    severity: "major",
+    category: "correctness",
+    confidence: 0.9,
+    importance: 8,
+    issueSimple: "mock",
+    whyWeak: "x",
+    howToFix: "y",
+    betterCode: "z",
+    reviewComment: "c",
+    evidence: [],
+    githubCommentTarget: { target: "line", reason: "x" },
+    autofixPossible: false,
+    views: [],
+    language: "ts",
+  };
+  assert.equal(
+    findingCodeStillInDiff(
+      {
+        ...base,
+        currentCode:
+          "private readonly provider: SmsProvider = new MockSmsAdapter();",
+      },
+      SAMPLE_DIFF,
+    ),
+    true,
+  );
+  assert.equal(
+    findingCodeStillInDiff(
+      { ...base, currentCode: "totallyGoneSnippet()" },
+      SAMPLE_DIFF,
+    ),
+    false,
+  );
 });

@@ -4,6 +4,10 @@ import type { ReviewRun } from "@review-os/schemas";
 import { renderFinalReviewMarkdown } from "./markdown.js";
 import { renderFinalReviewHtml } from "./html.js";
 import { renderFinalReviewTriage } from "./triage.js";
+import {
+  buildReviewFixBriefMarkdown,
+  reviewFixBriefFilename,
+} from "./agent-export.js";
 
 export type WriteReviewArtifactsOptions = {
   /**
@@ -56,9 +60,15 @@ export async function writeReviewArtifacts(
     const markdown = renderFinalReviewMarkdown(run);
     const html = renderFinalReviewHtml(run);
     const triage = renderFinalReviewTriage(run);
+    const fixBrief = buildReviewFixBriefMarkdown(run);
     await writeFile(finalMd, markdown, "utf8");
     await writeFile(finalHtml, html, "utf8");
     await writeFile(triageHtml, triage, "utf8");
+    await writeFile(
+      path.join(outputDir, reviewFixBriefFilename(run.prNumber)),
+      fixBrief,
+      "utf8",
+    );
     await writeFile(
       findingsPath,
       JSON.stringify(

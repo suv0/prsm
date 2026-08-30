@@ -1,5 +1,9 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import type { Finding, ReviewRun } from "@review-os/schemas";
+import { isFindingOpen } from "@review-os/schemas";
 import { applyDocumentedIntent, intentEvidenceFromFinding } from "./documented-intent.js";
+import { findingCodeStillInDiff } from "./diff-index.js";
 import { buildJudgeResult } from "./finalize.js";
 import {
   listReviewRuns,
@@ -343,6 +347,133 @@ export function mergeAgentFindings(
   return merged.sort((a, b) => score(b) - score(a));
 }
 
+/** Keep only the newest snapshot per agent (history under runs/ stays on disk). */
+export function latestRunsPerAgent(runs: ReviewRunMeta[]): ReviewRunMeta[] {
+  const byAgent = new Map<string, ReviewRunMeta>();
+  for (const meta of runs) {
+    const prev = byAgent.get(meta.agent);
+    if (!prev || meta.createdAt.localeCompare(prev.createdAt) >= 0) {
+      byAgent.set(meta.agent, meta);
+    }
+  }
+  return [...byAgent.values()].sort((a, b) =>
+    a.createdAt.localeCompare(b.createdAt),
+  );
+}
+
+function preserveTriageFields(from: Finding, onto: Finding): Finding {
+  const keepDisposition =
+    from.disposition && from.disposition !== "open"
+      ? from.disposition
+      : onto.disposition;
+  return {
+    ...onto,
+    disposition: keepDisposition ?? "open",
+    ...(from.falseAlarmNote || onto.falseAlarmNote
+      ? { falseAlarmNote: from.falseAlarmNote ?? onto.falseAlarmNote }
+      : {}),
+    rechecks:
+      from.rechecks && from.rechecks.length > 0
+        ? from.rechecks
+        : (onto.rechecks ?? []),
+    verifications:
+      from.verifications && from.verifications.length > 0
+        ? from.verifications
+        : (onto.verifications ?? []),
+    ...(from.verification || onto.verification
+      ? { verification: from.verification ?? onto.verification }
+      : {}),
+  };
+}
+
+export type ReconcileWavesResult = {
+  findings: Finding[];
+  dropped: number;
+  carried: number;
+  matched: number;
+};
+
+/**
+ * After merging the latest agent wave, drop previous open findings that look
+ * fixed (code gone from diff), carry ones still present that the new wave
+ * missed, and preserve triage/verify state on matches (including false alarms).
+ */
+export function reconcileAcrossReviewWaves(options: {
+  previousFindings: Finding[];
+  nextFindings: Finding[];
+  diffText?: string;
+}): ReconcileWavesResult {
+  const { previousFindings, nextFindings } = options;
+  const diffText = options.diffText ?? "";
+  const usedNext = new Set<number>();
+  const out: Finding[] = [];
+  let matched = 0;
+  let dropped = 0;
+  let carried = 0;
+
+  // Match all previous cards first so FA/fixed dispositions stick across waves.
+  for (const prev of previousFindings) {
+    let matchIndex = -1;
+    for (let i = 0; i < nextFindings.length; i++) {
+      if (usedNext.has(i)) continue;
+      if (findingsLikelySame(prev, nextFindings[i]!)) {
+        matchIndex = i;
+        break;
+      }
+    }
+    if (matchIndex >= 0) {
+      usedNext.add(matchIndex);
+      out.push(preserveTriageFields(prev, nextFindings[matchIndex]!));
+      matched += 1;
+    }
+  }
+
+  for (const prev of previousFindings) {
+    if (!isFindingOpen(prev)) continue;
+    const alreadyKept = out.some((f) => findingsLikelySame(prev, f));
+    if (alreadyKept) continue;
+
+    if (findingCodeStillInDiff(prev, diffText)) {
+      out.push(prev);
+      carried += 1;
+    } else {
+      dropped += 1;
+    }
+  }
+
+  // Keep closed cards (false alarm / verify-fixed) even if this wave missed them.
+  for (const prev of previousFindings) {
+    if (isFindingOpen(prev)) continue;
+    const alreadyKept = out.some((f) => findingsLikelySame(prev, f));
+    if (!alreadyKept) out.push(prev);
+  }
+
+  for (let i = 0; i < nextFindings.length; i++) {
+    if (usedNext.has(i)) continue;
+    out.push(nextFindings[i]!);
+  }
+
+  return {
+    findings: out.sort((a, b) => score(b) - score(a)),
+    dropped,
+    carried,
+    matched,
+  };
+}
+
+async function loadPreviousMergedFindings(
+  outputDir: string,
+): Promise<Finding[]> {
+  try {
+    const raw = JSON.parse(
+      await readFile(path.join(outputDir, "run.json"), "utf8"),
+    ) as { findings?: Finding[] };
+    return Array.isArray(raw.findings) ? raw.findings : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function rebuildMergedReview(options: {
   outputDir: string;
   prNumber: number;
@@ -353,13 +484,18 @@ export async function rebuildMergedReview(options: {
   ) => Promise<void>;
   baseRun?: ReviewRun | null;
   diffText?: string;
+  log?: (line: string) => void;
 }): Promise<{
   findingCount: number;
   runCount: number;
   runs: ReviewRunMeta[];
   run: ReviewRun;
+  reconcile?: { dropped: number; carried: number; matched: number };
 }> {
-  const runs = await listReviewRuns(options.outputDir);
+  const allRuns = await listReviewRuns(options.outputDir);
+  const runs = latestRunsPerAgent(allRuns);
+  const previousFindings = await loadPreviousMergedFindings(options.outputDir);
+
   const batches: Array<{ agent: string; findings: Finding[] }> = [];
   let template: ReviewRun | null = options.baseRun ?? null;
 
@@ -379,14 +515,31 @@ export async function rebuildMergedReview(options: {
     mergedRaw,
     options.diffText ?? "",
   );
-  const findings = intent.findings;
+
+  const reconciled = reconcileAcrossReviewWaves({
+    previousFindings,
+    nextFindings: intent.findings,
+    ...(options.diffText !== undefined ? { diffText: options.diffText } : {}),
+  });
+  const findings = reconciled.findings;
   const judge = buildJudgeResult(findings);
-  const agents = runs.map((meta) => ({
+  const agents = allRuns.map((meta) => ({
     id: meta.id,
     agent: meta.agent,
     createdAt: meta.createdAt,
     findingCount: meta.findingCount,
   }));
+
+  if (
+    options.log &&
+    (reconciled.dropped > 0 ||
+      reconciled.carried > 0 ||
+      allRuns.length !== runs.length)
+  ) {
+    options.log(
+      `reconcile: latest ${runs.length}/${allRuns.length} agent snapshot(s); matched ${reconciled.matched}, dropped ${reconciled.dropped} fixed, carried ${reconciled.carried} still-open`,
+    );
+  }
 
   const mergedRun: ReviewRun = {
     prNumber: options.prNumber,
@@ -400,9 +553,12 @@ export async function rebuildMergedReview(options: {
       ? {
           ...template.load,
           note: [
-            `Merged view across ${runs.length} agent run(s). Individual runs live under runs/.`,
+            `Merged view across latest ${runs.length} agent run(s) (${allRuns.length} on disk). Individual runs live under runs/.`,
             intent.demoted.length > 0
               ? `Documented-intent demoted ${intent.demoted.length} finding(s).`
+              : "",
+            reconciled.dropped > 0 || reconciled.carried > 0
+              ? `Reconcile dropped ${reconciled.dropped} fixed, carried ${reconciled.carried}.`
               : "",
           ]
             .filter(Boolean)
@@ -414,7 +570,7 @@ export async function rebuildMergedReview(options: {
           deletions: 0,
           files: [],
           diffTruncated: false,
-          note: `Merged view across ${runs.length} agent run(s).`,
+          note: `Merged view across latest ${runs.length} agent run(s) (${allRuns.length} on disk).`,
         },
     ...(template?.plan !== undefined ? { plan: template.plan } : {}),
     ...(template?.overview !== undefined ? { overview: template.overview } : {}),
@@ -430,12 +586,18 @@ export async function rebuildMergedReview(options: {
   } else {
     await options.render(mergedRun, options.outputDir);
   }
-  await writeAgentsIndex(options.outputDir, options.prNumber, runs);
+  // Index keeps full history; merge used latest-per-agent only.
+  await writeAgentsIndex(options.outputDir, options.prNumber, allRuns);
 
   return {
     findingCount: findings.length,
-    runCount: runs.length,
-    runs,
+    runCount: allRuns.length,
+    runs: allRuns,
     run: mergedRun,
+    reconcile: {
+      dropped: reconciled.dropped,
+      carried: reconciled.carried,
+      matched: reconciled.matched,
+    },
   };
 }

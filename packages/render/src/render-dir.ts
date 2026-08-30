@@ -1,6 +1,10 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ReviewRunSchema } from "@review-os/schemas";
+import {
+  buildReviewFixBriefMarkdown,
+  reviewFixBriefFilename,
+} from "./agent-export.js";
 import { renderFinalReviewMarkdown } from "./markdown.js";
 import { renderFinalReviewHtml } from "./html.js";
 import { renderFinalReviewTriage } from "./triage.js";
@@ -25,10 +29,16 @@ export async function renderReviewFromDir(
   const markdown = renderFinalReviewMarkdown(run);
   const html = renderFinalReviewHtml(run);
   const triage = renderFinalReviewTriage(run);
+  const fixBrief = buildReviewFixBriefMarkdown(run);
 
   await writeFile(path.join(outputDir, "final-review.md"), markdown, "utf8");
   await writeFile(path.join(outputDir, "final-review.html"), html, "utf8");
   await writeFile(path.join(outputDir, "triage.html"), triage, "utf8");
+  await writeFile(
+    path.join(outputDir, reviewFixBriefFilename(run.prNumber)),
+    fixBrief,
+    "utf8",
+  );
   await writeFile(
     path.join(outputDir, "findings.json"),
     JSON.stringify(

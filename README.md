@@ -110,14 +110,24 @@ The hub (`pnpm prsm`, or `--serve-ui` / `--serve`) is the main UI:
 
 | Page | What |
 |---|---|
-| `http://127.0.0.1:8788/` | Workbench: **Home** (review table), **New Review** wizard, **Live run**, **Settings** (GitHub + agents). Top tabs: Live run / Triage / List / Verify for the selected PR. The sidebar collapses to icons under ~960px; use the panel toggle to expand or collapse. |
-| `http://127.0.0.1:8788/pr/<n>/` | One-finding-at-a-time triage (same sidebar + workspace tabs as the hub). List and Verify keep that chrome; Verify shows an empty state until you run author-update verify. |
+| `http://127.0.0.1:8788/` | Workbench: **Home** (review table), **New Review** wizard, **Live run**, **Settings** (GitHub + agents). Top tabs: Live run / Triage / List / **Report** for the selected PR. The sidebar collapses to icons under ~960px; use the panel toggle to expand or collapse. |
+| `http://127.0.0.1:8788/pr/<n>/` | One-finding-at-a-time triage. **Verify this finding** checks only the card on screen. **List** has **Verify all open findings** (every open card). Both write **Fixed** for `resolved`/`accepted`. The **Report** tab shows the *last verify job* only (not the cumulative Fixed queue). **Copy fix brief** / List export still paste into your coding agent. |
 
 On a finding you can:
 
 - **Teach me** — deep teammate walkthrough (then **Copy lesson**)
 - **Recheck** — ask a question; history stores the answer + a paste-ready GitHub comment
-- **Verify author updates** — re-check after the PR author pushed or replied
+- **Verify this finding** (Triage) — re-check only the card on screen after the author pushed or replied
+- **Verify all open** (List) — same for every open finding
+- **Report** tab — last job’s verdicts (`verify-report.html`); Triage status counts stay the source of truth for Open / Fixed / False alarms
+
+| Surface | What it is |
+|---|---|
+| Triage → **Verify this finding** | Action: check the current card → may set **Fixed** on disk |
+| List → **Verify all open findings** | Action: check every open card → may set **Fixed** |
+| **Report** tab | Read-only last job report (scope + this-job counts + queue snapshot) |
+
+Hover any control (tabs, buttons, status counts, sections) for a short tip. **Fixed** = verify disposition on disk; browser **Resolved** = local-only hide.
 
 Pick the agent in the dropdown (same CLIs as the review). One agent per Teach me / Recheck.
 
@@ -197,7 +207,7 @@ reviews/<n>/
 | Prepare only (briefs, no AI) | `pnpm prsm <url>` |
 | Finalize after writing `passes/*.findings.json` | `pnpm prsm --finalize <n>` |
 | Re-render HTML from disk | `pnpm prsm --render <n>` |
-| Verify author updates | `pnpm prsm --verify <n>` |
+| Verify report (all open) | `pnpm prsm --verify <n>` |
 
 `pnpm review-pr …` is the same CLI.
 

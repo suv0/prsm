@@ -16,7 +16,8 @@ test("workspace chrome sidebar is icon-labeled and has a collapse toggle", () =>
   const html = workspaceChromeOpenHtml({ prNumber: 12, active: "triage" });
   assert.match(html, /class="wb-sidebar hub-sidebar"/);
   assert.match(html, /id="sidebar-toggle"/);
-  assert.match(html, /title="Home"/);
+  assert.match(html, /aria-label="Home"/);
+  assert.match(html, /data-help="Home —/);
   assert.match(html, /class="nav-label">Home</);
   assert.match(html, /class="nav-label">New Review</);
   assert.match(html, /class="nav-label">Settings</);
@@ -24,6 +25,9 @@ test("workspace chrome sidebar is icon-labeled and has a collapse toggle", () =>
   assert.match(html, /<svg class="ico"/);
   assert.match(html, /Live run/);
   assert.match(html, /Triage/);
+  assert.match(html, />Report</);
+  assert.match(html, /data-help="Report —/);
+  assert.match(html, /data-help="Triage —/);
 });
 
 test("sidebar CSS auto-collapses under 960px and supports expand/collapse classes", () => {
@@ -35,6 +39,8 @@ test("sidebar CSS auto-collapses under 960px and supports expand/collapse classe
   assert.match(css, /html\.is-sidebar-expanded/);
   assert.match(css, /\.hub-sidebar \.nav-label/);
   assert.match(css, /display: none/);
+  assert.match(css, /#prsm-help-tip/);
+  assert.match(css, /cursor: pointer/);
 });
 
 test("sidebar scripts persist expand/collapse per wide vs narrow viewport", () => {
@@ -68,6 +74,7 @@ test("icon catalog includes hub and action glyphs", () => {
     assert.match(iconHtml(name), /<svg class="ico"/);
     assert.match(iconHtml(name), /aria-hidden="true"/);
   }
+  assert.ok(ICON_INNER.download, "missing download icon");
 });
 
 test("verify pages keep accent-colored links", async () => {

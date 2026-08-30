@@ -1,6 +1,7 @@
 import {
   FindingVerificationSchema,
   VerifyReportSchema,
+  dispositionFromVerification,
   type Finding,
   type FindingVerification,
   type ReviewRun,
@@ -402,6 +403,8 @@ export function buildVerifyReport(options: {
   providers: string[];
   items: VerifyItem[];
   unmatchedThreads: VerifyThread[];
+  scope?: "finding" | "all";
+  queue?: { open: number; fixed: number; falseAlarm: number };
 }): VerifyReport {
   const counts = {
     resolved: 0,
@@ -414,6 +417,7 @@ export function buildVerifyReport(options: {
     counts[item.verification.status] += 1;
   }
   const providers = options.providers;
+  const scope = options.scope ?? "all";
   return VerifyReportSchema.parse({
     prNumber: options.run.prNumber,
     ...(options.run.prUrl ? { prUrl: options.run.prUrl } : {}),
@@ -421,6 +425,9 @@ export function buildVerifyReport(options: {
     createdAt: new Date().toISOString(),
     provider: providers.join("+") || "unknown",
     providers,
+    scope,
+    checkedCount: options.items.length,
+    ...(options.queue ? { queue: options.queue } : {}),
     counts,
     items: options.items,
     unmatchedThreads: options.unmatchedThreads.map((t) => ({
@@ -432,9 +439,28 @@ export function buildVerifyReport(options: {
   });
 }
 
+export function queueSnapshotFromRun(run: ReviewRun): {
+  open: number;
+  fixed: number;
+  falseAlarm: number;
+} {
+  let open = 0;
+  let fixed = 0;
+  let falseAlarm = 0;
+  for (const finding of run.findings) {
+    if (finding.kind === "praise") continue;
+    const d = finding.disposition ?? "open";
+    if (d === "false_alarm") falseAlarm += 1;
+    else if (d === "fixed") fixed += 1;
+    else open += 1;
+  }
+  return { open, fixed, falseAlarm };
+}
+
 /**
  * Merge this run's per-agent results into findings.
  * Re-running a different agent later replaces only that agent's entry.
+ * Resolved/accepted → disposition fixed (leaves open queue); never overwrites false_alarm.
  */
 export function applyVerificationsToRun(
   run: ReviewRun,
@@ -444,19 +470,40 @@ export function applyVerificationsToRun(
     ...run,
     findings: run.findings.map((finding) => {
       const incoming = byId.get(finding.id);
-      if (!incoming?.length) return finding;
+      if (!incoming?.length) {
+        return {
+          ...finding,
+          disposition: dispositionFromVerification(finding),
+        };
+      }
       let next = [...(finding.verifications ?? [])];
       for (const v of incoming) {
         next = upsertAgentVerification(next, v);
       }
       const rollup = rollupVerifications(next);
-      return {
+      const withRollup = {
         ...finding,
         verifications: next,
         ...(rollup ? { verification: rollup } : {}),
       };
+      return {
+        ...withRollup,
+        disposition: dispositionFromVerification(withRollup),
+      };
     }),
   };
+}
+
+/** Repair disposition from existing verification stamps (older runs). */
+export function syncDispositionsFromVerifications(run: ReviewRun): ReviewRun {
+  let changed = false;
+  const findings = run.findings.map((finding) => {
+    const next = dispositionFromVerification(finding);
+    if (next === (finding.disposition ?? "open")) return finding;
+    changed = true;
+    return { ...finding, disposition: next };
+  });
+  return changed ? { ...run, findings } : run;
 }
 
 export function fileDiffForFinding(

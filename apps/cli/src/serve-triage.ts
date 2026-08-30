@@ -7,6 +7,7 @@ import {
   buildJudgeResult,
   ensureUniqueFindingIds,
   extractDiffForFile,
+  syncDispositionsFromVerifications,
 } from "@review-os/core";
 import {
   listAvailableProviders,
@@ -14,6 +15,7 @@ import {
 import { githubFileUrl, renderReviewFromDir } from "@review-os/render";
 import {
   ReviewRunSchema,
+  dispositionFromVerification,
   type AppConfig,
   type Finding,
   type RecheckEntry,
@@ -250,7 +252,7 @@ export function toTriagePayload(run: ReviewRun) {
         ...(githubUrl ? { githubUrl } : {}),
         severity: finding.severity,
         category: finding.category,
-        disposition: finding.disposition ?? "open",
+        disposition: dispositionFromVerification(finding),
         falseAlarmNote: finding.falseAlarmNote,
         issueSimple: finding.issueSimple,
         whyWeak: finding.whyWeak,
@@ -260,6 +262,12 @@ export function toTriagePayload(run: ReviewRun) {
         reviewComment: finding.reviewComment,
         language: finding.language || "ts",
         rechecks: finding.rechecks ?? [],
+        ...(finding.verification
+          ? {
+              verificationStatus: finding.verification.status,
+              verificationSummary: finding.verification.summary,
+            }
+          : {}),
       };
     }),
   };
@@ -294,7 +302,17 @@ export async function handleTriageApi(
   }
 
   if (method === "GET" && apiPath === "/findings") {
-    const run = await loadRun(outputDir);
+    let run = await loadRun(outputDir);
+    const synced = syncDispositionsFromVerifications(run);
+    if (synced !== run) {
+      await writeFile(
+        path.join(outputDir, "run.json"),
+        JSON.stringify(synced, null, 2),
+        "utf8",
+      );
+      await renderReviewFromDir(outputDir);
+      run = synced;
+    }
     json(res, 200, toTriagePayload(run));
     return true;
   }
@@ -489,7 +507,12 @@ export async function handleTriageApi(
     }
 
     const raw = await readBody(req);
-    let body: { provider?: string; providers?: string[]; prRef?: string } = {};
+    let body: {
+      provider?: string;
+      providers?: string[];
+      prRef?: string;
+      findingIds?: string[];
+    } = {};
     if (raw.trim()) {
       try {
         body = JSON.parse(raw) as typeof body;
@@ -503,6 +526,9 @@ export async function handleTriageApi(
       ...(Array.isArray(body.providers) ? body.providers.map(String) : []),
       ...(body.provider?.trim() ? [body.provider.trim()] : []),
     ];
+    const findingIds = Array.isArray(body.findingIds)
+      ? body.findingIds.map(String).filter(Boolean)
+      : [];
 
     let prNumber: number;
     try {
@@ -537,6 +563,7 @@ export async function handleTriageApi(
           repoRoot,
           outputDir,
           ...(providerIds.length ? { providerIds } : {}),
+          ...(findingIds.length ? { findingIds } : {}),
           ...(body.prRef?.trim() ? { prRef: body.prRef.trim() } : {}),
           log: (line) => {
             appendVerifyLog(job, line);

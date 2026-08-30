@@ -23,8 +23,11 @@ export { finalizeReviewRun } from "./finalize-run.js";
 export {
   mergeAgentFindings,
   findingsLikelySame,
+  latestRunsPerAgent,
+  reconcileAcrossReviewWaves,
   rebuildMergedReview,
 } from "./merge-runs.js";
+export type { ReconcileWavesResult } from "./merge-runs.js";
 export {
   makeRunId,
   resolveAgentName,
@@ -36,7 +39,11 @@ export {
   tagFindingsWithAgent,
 } from "./versioning.js";
 export type { ReviewRunMeta, AgentsIndex } from "./versioning.js";
-export { buildDiffIndex, reconcileFindingLines } from "./diff-index.js";
+export {
+  buildDiffIndex,
+  reconcileFindingLines,
+  findingCodeStillInDiff,
+} from "./diff-index.js";
 export type { DiffFileIndex, LineReconcileResult } from "./diff-index.js";
 export {
   applyDocumentedIntent,
@@ -87,10 +94,25 @@ export {
   upsertAgentVerification,
   buildVerifyReport,
   applyVerificationsToRun,
+  syncDispositionsFromVerifications,
+  queueSnapshotFromRun,
   fileDiffForFinding,
   chunkPairs,
 } from "./verify-fixes.js";
 export type { VerifyThread, VerifyThreadMessage } from "./verify-fixes.js";
+export {
+  EXTERNAL_MATCH_MIN_SCORE,
+  scoreExternalMatch,
+  matchFindingsToExternalThreads,
+  buildExternalMatchPrompt,
+  parseExternalMatchModelResponse,
+  toExternalMatch,
+  applyExternalMatchesToRun,
+} from "./external-duplicates.js";
+export type {
+  ExternalMatchCandidate,
+  ParsedExternalMatch,
+} from "./external-duplicates.js";
 export type {
   Pass,
   PassContext,

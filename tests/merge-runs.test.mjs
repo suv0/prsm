@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   findingsLikelySame,
+  latestRunsPerAgent,
   mergeAgentFindings,
+  reconcileAcrossReviewWaves,
 } from "../packages/core/dist/merge-runs.js";
 
 function finding(overrides) {
@@ -236,4 +238,116 @@ test("merge prefers documented-debt over major for same courier log", () => {
   assert.equal(merged.length, 1);
   assert.equal(merged[0].severity, "suggestion");
   assert.equal(merged[0].category, "documented-debt");
+});
+
+test("latestRunsPerAgent keeps newest per agent", () => {
+  const runs = [
+    {
+      id: "a1",
+      agent: "cursor",
+      createdAt: "2026-08-15T10:00:00.000Z",
+      findingCount: 2,
+      path: "runs/a1",
+    },
+    {
+      id: "b1",
+      agent: "claude-code",
+      createdAt: "2026-08-15T11:00:00.000Z",
+      findingCount: 1,
+      path: "runs/b1",
+    },
+    {
+      id: "a2",
+      agent: "cursor",
+      createdAt: "2026-08-16T09:00:00.000Z",
+      findingCount: 3,
+      path: "runs/a2",
+    },
+  ];
+  const latest = latestRunsPerAgent(runs);
+  assert.equal(latest.length, 2);
+  assert.equal(latest.find((r) => r.agent === "cursor")?.id, "a2");
+  assert.equal(latest.find((r) => r.agent === "claude-code")?.id, "b1");
+});
+
+test("reconcileAcrossReviewWaves preserves disposition on match", () => {
+  const previous = [
+    finding({
+      id: "old",
+      disposition: "false_alarm",
+      falseAlarmNote: "intentional mock",
+    }),
+  ];
+  const next = [
+    finding({
+      id: "new",
+      issueSimple: "SMS factory returns a mock in production paths",
+    }),
+  ];
+  const result = reconcileAcrossReviewWaves({
+    previousFindings: previous,
+    nextFindings: next,
+    diffText: "",
+  });
+  assert.equal(result.findings.length, 1);
+  assert.equal(result.findings[0].disposition, "false_alarm");
+  assert.equal(result.matched, 1);
+});
+
+test("reconcileAcrossReviewWaves drops previous when currentCode gone from diff", () => {
+  const previous = [
+    finding({
+      id: "old",
+      file: "services/backend/src/sms/sms-provider.factory.ts",
+      line: 8,
+      currentCode: "private readonly provider: SmsProvider = new MockSmsAdapter();",
+      disposition: "open",
+    }),
+  ];
+  const diff = `diff --git a/services/backend/src/sms/sms-provider.factory.ts b/services/backend/src/sms/sms-provider.factory.ts
+--- a/services/backend/src/sms/sms-provider.factory.ts
++++ b/services/backend/src/sms/sms-provider.factory.ts
+@@ -1,3 +1,3 @@
++export class SmsProviderFactory {
++  getProvider() { return realProvider; }
++}
+`;
+  const result = reconcileAcrossReviewWaves({
+    previousFindings: previous,
+    nextFindings: [],
+    diffText: diff,
+  });
+  assert.equal(result.dropped, 1);
+  assert.equal(result.carried, 0);
+  assert.equal(result.findings.length, 0);
+});
+
+test("reconcileAcrossReviewWaves carries still-present open findings", () => {
+  const code = "private readonly provider: SmsProvider = new MockSmsAdapter();";
+  const previous = [
+    finding({
+      id: "old",
+      file: "services/backend/src/sms/sms-provider.factory.ts",
+      line: 8,
+      currentCode: code,
+      disposition: "open",
+    }),
+  ];
+  const diff = `diff --git a/services/backend/src/sms/sms-provider.factory.ts b/services/backend/src/sms/sms-provider.factory.ts
+--- a/services/backend/src/sms/sms-provider.factory.ts
++++ b/services/backend/src/sms/sms-provider.factory.ts
+@@ -0,0 +1,3 @@
++export class SmsProviderFactory {
++  private readonly provider: SmsProvider = new MockSmsAdapter();
++  getProvider() { return this.provider; }
+`;
+  const result = reconcileAcrossReviewWaves({
+    previousFindings: previous,
+    nextFindings: [],
+    diffText: diff,
+  });
+  assert.equal(result.carried, 1);
+  assert.equal(result.dropped, 0);
+  assert.equal(result.findings.length, 1);
+  assert.equal(result.findings[0].id, "old");
 });

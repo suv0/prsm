@@ -1,6 +1,13 @@
+export { tip, tipKey, Help, uiHelpCss, uiHelpScript, escapeAttr } from "./ui-help.js";
+export type { HelpKey } from "./ui-help.js";
 export { renderFinalReviewMarkdown } from "./markdown.js";
 export { renderFinalReviewHtml } from "./html.js";
 export { renderFinalReviewTriage } from "./triage.js";
+export {
+  buildFindingFixBrief,
+  buildReviewFixBriefMarkdown,
+  reviewFixBriefFilename,
+} from "./agent-export.js";
 export {
   renderVerifyReportHtml,
   renderVerifyPlaceholderHtml,

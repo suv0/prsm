@@ -16,7 +16,11 @@ Default path is **agent-first** (local CLIs, no PRism API key). Optional `--prov
 
 Similar findings from different agents become **one card** (`mergeAgentFindings`). Extra agents attach as views (agree / extend / dissent). Unique findings stay separate.
 
+On rebuild, only the **latest snapshot per agent** feeds the open merge (older runs stay under `runs/`). Previous open findings are reconciled against the new wave: matched cards keep triage/verify state; unmatched ones whose `currentCode` is gone from the diff are dropped as fixed; still-present misses are carried forward so a flaky second pass cannot erase a real issue.
+
 This rebuild happens **when each agent finishes**, not only at the end. You can open `http://127.0.0.1:8788/pr/<n>/` after the first agent.
+
+**Verify** — Triage **Verify this finding** checks the current card only; List **Verify all open findings** checks every open card. Rollup `resolved` / `accepted` sets `disposition: fixed` (Fixed) and removes the card from the open queue (not a false alarm). The **Report** tab (`verify-report.html`) is the last job only: scope (`finding` \| `all`), this-job verdicts, and a cumulative Open / Fixed / False alarms snapshot after apply — not a second source of truth for the queue.
 
 Markdown/HTML are render-only. `findings.json` / `run.json` are the source of truth.
 

@@ -33,8 +33,51 @@ export const FindingViewSchema = z.object({
 });
 export type FindingView = z.infer<typeof FindingViewSchema>;
 
-export const FindingDispositionSchema = z.enum(["open", "false_alarm"]);
+/** open = still in queue; false_alarm = bad finding; fixed = verified addressed (not a false alarm). */
+export const FindingDispositionSchema = z.enum([
+  "open",
+  "false_alarm",
+  "fixed",
+]);
 export type FindingDisposition = z.infer<typeof FindingDispositionSchema>;
+
+/** True when the finding should appear in the open triage/list queue. */
+export function isFindingOpen(finding: {
+  disposition?: FindingDisposition | undefined;
+  verification?: { status?: string | undefined } | null | undefined;
+  externalMatch?: { action?: string | undefined } | null | undefined;
+}): boolean {
+  const d = finding.disposition ?? "open";
+  if (d === "false_alarm" || d === "fixed") return false;
+  const status = finding.verification?.status;
+  if (status === "resolved" || status === "accepted") return false;
+  if (finding.externalMatch?.action === "skip") return false;
+  return true;
+}
+
+/**
+ * Align disposition with verify rollup and external-comment checks (repairs
+ * older runs that only stamped verification/externalMatch). A finding whose
+ * existing GitHub thread already covers it (externalMatch.action="skip")
+ * counts as resolved the same way an author-verified fix does — nothing left
+ * to do here, just from a different source. A "follow_up" match stays open:
+ * there's still something worth saying.
+ */
+export function dispositionFromVerification(finding: {
+  disposition?: FindingDisposition | undefined;
+  verification?: { status?: string | undefined } | null | undefined;
+  externalMatch?: { action?: string | undefined } | null | undefined;
+}): FindingDisposition {
+  if (finding.disposition === "false_alarm") return "false_alarm";
+  const status = finding.verification?.status;
+  if (status === "resolved" || status === "accepted") return "fixed";
+  if (finding.externalMatch?.action === "skip") return "fixed";
+  if (finding.disposition === "fixed") {
+    if (status === "still_open" || status === "needs_look") return "open";
+    return "fixed";
+  }
+  return finding.disposition ?? "open";
+}
 
 export const RecheckActionSchema = z.enum(["stand", "update", "false_alarm"]);
 export type RecheckAction = z.infer<typeof RecheckActionSchema>;
@@ -83,6 +126,30 @@ export const FindingVerificationSchema = z.object({
 });
 export type FindingVerification = z.infer<typeof FindingVerificationSchema>;
 
+/**
+ * skip = the existing GitHub thread already covers this finding, nothing to add.
+ * follow_up = the thread misses something real; followUpComment adds that angle
+ * instead of restating the same point.
+ */
+export const ExternalMatchActionSchema = z.enum(["skip", "follow_up"]);
+export type ExternalMatchAction = z.infer<typeof ExternalMatchActionSchema>;
+
+/**
+ * A finding that overlaps a pre-existing GitHub review comment thread from
+ * someone else (a human reviewer or another bot) — not a thread PRism posted.
+ */
+export const ExternalMatchSchema = z.object({
+  author: z.string().min(1),
+  url: z.string().optional(),
+  threadExcerpt: z.string().min(1),
+  score: z.number(),
+  action: ExternalMatchActionSchema,
+  followUpComment: z.string().optional(),
+  checkedAt: z.string().min(1),
+  provider: z.string().min(1),
+});
+export type ExternalMatch = z.infer<typeof ExternalMatchSchema>;
+
 export const VerifyItemSchema = z.object({
   findingId: z.string().min(1),
   file: z.string().min(1),
@@ -103,6 +170,24 @@ export const VerifyReportSchema = z.object({
   /** Comma-joined for older UI; prefer `providers`. */
   provider: z.string().min(1),
   providers: z.array(z.string().min(1)).default([]),
+  /**
+   * How this job was scoped.
+   * finding = Triage “Verify this finding”; all = List / CLI full open set.
+   */
+  scope: z.enum(["finding", "all"]).default("all"),
+  /** How many findings this job actually checked. */
+  checkedCount: z.number().int().nonnegative().optional(),
+  /**
+   * Queue after this job was applied to disk (cumulative, not this-job-only).
+   * Helps the Report tab not look like it wiped earlier Fixed counts.
+   */
+  queue: z
+    .object({
+      open: z.number().int().nonnegative(),
+      fixed: z.number().int().nonnegative(),
+      falseAlarm: z.number().int().nonnegative(),
+    })
+    .optional(),
   counts: z.object({
     resolved: z.number().int().nonnegative(),
     needs_look: z.number().int().nonnegative(),
@@ -154,6 +239,8 @@ export const FindingSchema = z.object({
   verifications: z.array(FindingVerificationSchema).default([]),
   /** Recheck history from triage (newest first). */
   rechecks: z.array(RecheckEntrySchema).default([]),
+  /** Set once an existing (non-PRism) GitHub thread is found covering this finding. */
+  externalMatch: ExternalMatchSchema.optional(),
 });
 export type Finding = z.infer<typeof FindingSchema>;
 

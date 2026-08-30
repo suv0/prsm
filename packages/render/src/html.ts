@@ -1,8 +1,15 @@
 import type { Finding, ReviewRun } from "@review-os/schemas";
+import { isFindingOpen } from "@review-os/schemas";
+import {
+  buildFindingFixBrief,
+  buildReviewFixBriefMarkdown,
+  reviewFixBriefFilename,
+} from "./agent-export.js";
 import { githubFileUrl } from "./github-file-link.js";
 import { renderOverviewHtml } from "./overview.js";
 import { agentFindingsNavHtml, latestRunPerAgent, workspaceChromeCloseHtml, workspaceChromeCss, workspaceChromeHeadHtml, workspaceChromeOpenHtml } from "./agent-nav.js";
 import { iconHtml, iconTextHtml } from "./ui-icons.js";
+import { Help, tip } from "./ui-help.js";
 
 function escapeHtml(value: string): string {
   return value
@@ -197,6 +204,33 @@ function renderEditor(options: {
 </div>`;
 }
 
+/** disposition="fixed" purely from an existing-thread "skip" match, not an author code fix. */
+function isExternallyCoveredOnly(finding: Finding): boolean {
+  const status = finding.verification?.status;
+  return (
+    finding.externalMatch?.action === "skip" &&
+    status !== "resolved" &&
+    status !== "accepted"
+  );
+}
+
+function externalMatchHtml(finding: Finding): string {
+  const match = finding.externalMatch;
+  if (!match) return "";
+  const authorLine = match.url
+    ? `<a href="${escapeHtml(match.url)}" target="_blank" rel="noopener noreferrer">@${escapeHtml(match.author)}</a>`
+    : `@${escapeHtml(match.author)}`;
+  const note =
+    match.action === "follow_up" && match.followUpComment
+      ? `<p><strong>Follow-up (adds to what's already said):</strong> ${escapeHtml(match.followUpComment)}</p>`
+      : `<p>Already covered — no comment needed here.</p>`;
+  return `<section class="external-match">
+    <p class="external-match-badge" ${tip(Help.badgeExternalMatch)}>${iconTextHtml("message-circle", "Already flagged by " + authorLine)}</p>
+    <p class="meta">${escapeHtml(match.threadExcerpt)}</p>
+    ${note}
+  </section>`;
+}
+
 function viewsHtml(finding: Finding): string {
   if (!finding.views.length) return "";
   const items = finding.views
@@ -228,45 +262,7 @@ function agentsSummaryHtml(run: ReviewRun): string {
 }
 
 function buildAgentPacket(finding: Finding, prNumber: number): string {
-  const line =
-    finding.endLine && finding.endLine !== finding.line
-      ? `${finding.line}–${finding.endLine}`
-      : String(finding.line);
-  return [
-    "Please verify this PR review finding. Is it a real issue, should it be softened, or is it a false alarm?",
-    "",
-    `PR #${prNumber}`,
-    `Finding id: ${finding.id}`,
-    `Disposition: ${finding.disposition ?? "open"}`,
-    `Severity: ${finding.severity}`,
-    `Category: ${finding.category}`,
-    `File: ${finding.file}`,
-    `Line: ${line}`,
-    "",
-    "## Issue (simple)",
-    finding.issueSimple,
-    "",
-    "## Why weak",
-    finding.whyWeak,
-    "",
-    "## How to fix",
-    finding.howToFix,
-    "",
-    "## Current code",
-    "```",
-    finding.currentCode,
-    "```",
-    "",
-    "## Better code",
-    "```",
-    finding.betterCode,
-    "```",
-    "",
-    "## Paste comment",
-    finding.reviewComment,
-    "",
-    "Reply with: stand | update (what to change) | false alarm (why). Keep any revised reviewComment to 1–3 short sentences.",
-  ].join("\n");
+  return buildFindingFixBrief(finding, prNumber);
 }
 
 function cardHtml(
@@ -300,21 +296,26 @@ function cardHtml(
       <p class="meta">${metaInner}</p>
     </div>
     <div class="card-actions">
-      <button type="button" class="has-ico" data-action="copy-agent" data-label="Copy for agent">${iconTextHtml("clipboard", "Copy for agent")}</button>
-      <button type="button" class="btn-secondary has-ico" data-action="resolve">${iconTextHtml("check", "Resolved")}</button>
-      <button type="button" class="btn-secondary has-ico" data-action="unresolve" hidden>${iconTextHtml("undo", "Restore")}</button>
+      <button type="button" class="has-ico" data-action="copy-agent" data-label="Copy fix brief" ${tip(Help.copyFixBrief)}>${iconTextHtml("clipboard", "Copy fix brief")}</button>
+      <button type="button" class="btn-secondary has-ico" data-action="resolve" ${tip(Help.cardResolve)}>${iconTextHtml("check", "Resolved")}</button>
+      <button type="button" class="btn-secondary has-ico" data-action="unresolve" hidden ${tip(Help.cardRestore)}>${iconTextHtml("undo", "Restore")}</button>
     </div>
   </header>
   ${
     finding.disposition === "false_alarm"
       ? `<p class="meta">False alarm${finding.falseAlarmNote ? ` — ${escapeHtml(finding.falseAlarmNote)}` : ""}</p>`
-      : ""
+      : finding.disposition === "fixed"
+        ? isExternallyCoveredOnly(finding)
+          ? `<p class="meta">Already flagged — covered by an existing GitHub comment, not an author code fix</p>`
+          : `<p class="meta">Fixed${finding.verification?.summary ? ` — ${escapeHtml(finding.verification.summary)}` : finding.verification?.status ? ` (${escapeHtml(finding.verification.status)})` : ""}</p>`
+        : ""
   }
+  ${externalMatchHtml(finding)}
   ${viewsHtml(finding)}
   <section>
     <h3>Current code</h3>
     <div class="copy-row">
-      <button type="button" class="has-ico" data-copy="${encodeCopyPayload(finding.currentCode)}" data-label="Copy code">${iconTextHtml("copy", "Copy code")}</button>
+      <button type="button" class="has-ico" data-copy="${encodeCopyPayload(finding.currentCode)}" data-label="Copy code" ${tip(Help.copyCode)}>${iconTextHtml("copy", "Copy code")}</button>
     </div>
     ${renderEditor({
       code: finding.currentCode,
@@ -343,7 +344,7 @@ function cardHtml(
     <section>
       <h3>Better code</h3>
       <div class="copy-row">
-        <button type="button" class="has-ico" data-copy="${encodeCopyPayload(finding.betterCode)}" data-label="Copy fix">${iconTextHtml("copy", "Copy fix")}</button>
+        <button type="button" class="has-ico" data-copy="${encodeCopyPayload(finding.betterCode)}" data-label="Copy fix" ${tip(Help.copyBetter)}>${iconTextHtml("copy", "Copy fix")}</button>
       </div>
       ${renderEditor({
         code: finding.betterCode,
@@ -355,18 +356,18 @@ function cardHtml(
   </details>`
   }
   <section class="review-workspace">
-    <h3>Your paste comment (keep it short)</h3>
+    <h3 class="has-tip" ${tip(Help.sectionComment)}>Your paste comment (keep it short)</h3>
     <p class="hint">Edit this into the simple GitHub comment you want. Saved in this browser for PR #${prNumber}.</p>
-    <textarea class="simple-comment" rows="4" data-field="simple-comment" placeholder="Short polite comment to paste on GitHub…">${escapeHtml(finding.reviewComment)}</textarea>
+    <textarea class="simple-comment" rows="4" data-field="simple-comment" placeholder="Short polite comment to paste on GitHub…" ${tip(Help.sectionComment)}>${escapeHtml(finding.reviewComment)}</textarea>
     <div class="copy-row toolbar-row">
-      <button type="button" class="has-ico" data-action="save-comment">${iconTextHtml("save", "Save comment")}</button>
-      <button type="button" class="has-ico" data-action="copy-simple" data-label="Copy comment">${iconTextHtml("copy", "Copy comment")}</button>
-      <button type="button" class="btn-secondary has-ico" data-action="reset-comment">${iconTextHtml("rotate-ccw", "Reset to original")}</button>
+      <button type="button" class="has-ico" data-action="save-comment" ${tip(Help.saveComment)}>${iconTextHtml("save", "Save comment")}</button>
+      <button type="button" class="has-ico" data-action="copy-simple" data-label="Copy comment" ${tip(Help.copyComment)}>${iconTextHtml("copy", "Copy comment")}</button>
+      <button type="button" class="btn-secondary has-ico" data-action="reset-comment" ${tip(Help.resetComment)}>${iconTextHtml("rotate-ccw", "Reset to original")}</button>
     </div>
     <details class="details-block">
-      <summary>Original generated comment</summary>
+      <summary ${tip(Help.originalComment)}>Original generated comment</summary>
       <div class="copy-row">
-        <button type="button" class="has-ico" data-copy="${encodeCopyPayload(finding.reviewComment)}" data-label="Copy original">${iconTextHtml("copy", "Copy original")}</button>
+        <button type="button" class="has-ico" data-copy="${encodeCopyPayload(finding.reviewComment)}" data-label="Copy original" ${tip(Help.originalComment)}>${iconTextHtml("copy", "Copy original")}</button>
       </div>
       ${renderEditor({
         code: finding.reviewComment,
@@ -378,20 +379,26 @@ function cardHtml(
     </details>
   </section>
   <section class="review-workspace">
-    <h3>Double-check notes</h3>
+    <h3 class="has-tip" ${tip(Help.saveNotes)}>Double-check notes</h3>
     <p class="hint">After you verify in chat, jot the verdict here (stands / skip / soft). Local only.</p>
-    <textarea class="notes" rows="3" data-field="notes" placeholder="e.g. Verified — post. Or: false positive, skip."></textarea>
+    <textarea class="notes" rows="3" data-field="notes" placeholder="e.g. Verified — post. Or: false positive, skip." ${tip(Help.saveNotes)}></textarea>
     <div class="copy-row">
-      <button type="button" class="btn-secondary has-ico" data-action="save-notes">${iconTextHtml("save", "Save notes")}</button>
+      <button type="button" class="btn-secondary has-ico" data-action="save-notes" ${tip(Help.saveNotes)}>${iconTextHtml("save", "Save notes")}</button>
     </div>
   </section>
 </article>`;
 }
 
-function clientScript(prNumber: number): string {
+function clientScript(
+  prNumber: number,
+  fixBriefMd: string,
+  fixBriefFilename: string,
+): string {
   return `<script>
 (function () {
   const PR = ${prNumber};
+  const FIX_BRIEF_MD = ${JSON.stringify(fixBriefMd)};
+  const FIX_BRIEF_FILENAME = ${JSON.stringify(fixBriefFilename)};
   const STORAGE_KEY = "review-os:pr-" + PR + ":triage:v1";
 
   function setBtnLabel(el, text) {
@@ -444,6 +451,57 @@ function clientScript(prNumber: number): string {
     return card.getAttribute("data-original-comment") || "";
   }
 
+  function collectOpenFixBrief() {
+    const cards = openRoot ? openRoot.querySelectorAll(".card[data-agent-packet]") : [];
+    if (!cards.length) return FIX_BRIEF_MD;
+    const parts = [
+      "# PR #" + PR + " — fix brief for coding agent",
+      "",
+      "Open findings on this List page (" + cards.length + "). Paste into your coding agent to verify and fix.",
+      "",
+      "---",
+      "",
+    ];
+    cards.forEach(function (card, index) {
+      const packet = decodeURIComponent(card.getAttribute("data-agent-packet") || "");
+      if (!packet) return;
+      parts.push("## Finding " + (index + 1), "", packet, "", "---", "");
+    });
+    return parts.join("\\n").trim() + "\\n";
+  }
+
+  function downloadText(filename, text) {
+    const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function copyFixBriefAll() {
+    const text = collectOpenFixBrief();
+    try {
+      await navigator.clipboard.writeText(text);
+      showFlash("Copied all open fix briefs — paste into your coding agent");
+    } catch {
+      showFlash("Copy failed");
+    }
+  }
+
+  function downloadFixBrief() {
+    downloadText(FIX_BRIEF_FILENAME, collectOpenFixBrief());
+    showFlash("Downloaded " + FIX_BRIEF_FILENAME);
+  }
+
+  const copyAllBtn = document.getElementById("btn-copy-all-fix");
+  const downloadBtn = document.getElementById("btn-download-fix");
+  if (copyAllBtn) copyAllBtn.addEventListener("click", copyFixBriefAll);
+  if (downloadBtn) downloadBtn.addEventListener("click", downloadFixBrief);
+
   function refreshCounts() {
     const open = openRoot ? openRoot.querySelectorAll(".card").length : 0;
     const resolved = resolvedRoot ? resolvedRoot.querySelectorAll(".card").length : 0;
@@ -480,8 +538,251 @@ function clientScript(prNumber: number): string {
     placeCard(card, state.resolved.includes(id));
   }
 
-  document.querySelectorAll(".card[data-finding-id]").forEach(applyStateToCard);
+  document.querySelectorAll("#open-findings .card[data-finding-id], #resolved-findings .card[data-finding-id]").forEach(applyStateToCard);
   refreshCounts();
+
+  // --- Verify all open (same API as triage; no findingIds) ---
+  const SERVED = location.protocol === "http:" || location.protocol === "https:";
+  const BASE = (function () {
+    var p = location.pathname || "/";
+    var parts = p.split("/");
+    if (parts[1] === "pr" && /^[0-9]+$/.test(parts[2] || "")) {
+      return "/pr/" + parts[2];
+    }
+    if (p.endsWith("/final-review.html")) p = p.slice(0, -"/final-review.html".length);
+    if (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
+    return p === "/" ? "" : p;
+  })();
+  function apiUrl(path) {
+    return BASE + "/api" + path;
+  }
+
+  var verifyBtn = document.getElementById("btn-verify");
+  var verifyStatus = document.getElementById("verify-status");
+  var verifyLive = document.getElementById("verify-live");
+  var verifyLogs = document.getElementById("verify-logs");
+  var verifyPanel = document.getElementById("verify-panel");
+  var verifying = false;
+  var verifyPollTimer = 0;
+  var verifyJobId = "";
+  var lastVerifyLogCount = 0;
+
+  function selectedVerifyAgents() {
+    return Array.from(document.querySelectorAll('input[name="verify-agent"]:checked'))
+      .map(function (el) { return el instanceof HTMLInputElement ? el.value : ""; })
+      .filter(Boolean);
+  }
+
+  function setVerifyUiRunning(running) {
+    verifying = Boolean(running);
+    if (verifyBtn) {
+      verifyBtn.disabled = running || !SERVED;
+      setBtnLabel(verifyBtn, running ? "Verifying…" : "Verify all open findings");
+    }
+    if (verifyPanel) verifyPanel.hidden = false;
+  }
+
+  function renderVerifyJob(job) {
+    if (!job) return;
+    if (verifyPanel) verifyPanel.hidden = false;
+    var progress = job.progress;
+    var headline =
+      job.status === "running"
+        ? "VERIFYING"
+        : job.status === "done"
+          ? "VERIFY DONE"
+          : "VERIFY FAILED";
+    if (verifyStatus) {
+      verifyStatus.hidden = false;
+      verifyStatus.className = "verify-status " + job.status;
+      if (job.status === "done" && job.counts) {
+        var c = job.counts;
+        verifyStatus.innerHTML =
+          headline +
+          " · resolved " + (c.resolved || 0) +
+          " · accepted " + (c.accepted || 0) +
+          " · needs look " + (c.needs_look || 0) +
+          " · still open " + (c.still_open || 0) +
+          ' · <a href="verify-report.html">Open report</a>';
+      } else if (job.status === "error") {
+        verifyStatus.textContent = headline + " · " + (job.error || "unknown error");
+      } else {
+        verifyStatus.textContent =
+          headline + (progress && progress.label ? " · " + progress.label : "");
+      }
+    }
+    if (verifyLive) {
+      verifyLive.hidden = false;
+      var ageMs = Date.now() - Date.parse(job.updatedAt || job.createdAt || "");
+      var age =
+        !Number.isFinite(ageMs) || ageMs < 0
+          ? ""
+          : ageMs < 5000
+            ? "just now"
+            : Math.round(ageMs / 1000) + "s ago";
+      verifyLive.textContent =
+        (job.status || "") +
+        (progress && progress.label ? " · " + progress.label : "") +
+        (age ? " · " + age : "");
+    }
+    if (verifyLogs) {
+      var logs = Array.isArray(job.logs) ? job.logs : [];
+      verifyLogs.textContent = logs.join("\\n");
+      if (logs.length !== lastVerifyLogCount) {
+        verifyLogs.scrollTop = verifyLogs.scrollHeight;
+        lastVerifyLogCount = logs.length;
+      }
+    }
+  }
+
+  function stopVerifyPoll() {
+    if (verifyPollTimer) {
+      window.clearInterval(verifyPollTimer);
+      verifyPollTimer = 0;
+    }
+  }
+
+  async function pollVerifyJob() {
+    if (!verifyJobId) return;
+    try {
+      var res = await fetch(apiUrl("/verify/" + verifyJobId));
+      var job = await res.json();
+      renderVerifyJob(job);
+      if (job.status === "done" || job.status === "error") {
+        stopVerifyPoll();
+        setVerifyUiRunning(false);
+        if (job.status === "done") {
+          var c = job.counts || {};
+          showFlash(
+            "Verify done · resolved " +
+              (c.resolved || 0) +
+              " · accepted " +
+              (c.accepted || 0) +
+              " — refreshing…",
+          );
+          window.setTimeout(function () { location.reload(); }, 900);
+        } else {
+          showFlash(job.error || "Verify failed");
+        }
+      } else {
+        setVerifyUiRunning(true);
+      }
+    } catch (e) {
+      if (verifyLive) {
+        verifyLive.hidden = false;
+        verifyLive.textContent = "Poll error — retrying…";
+      }
+    }
+  }
+
+  function startVerifyPoll(id) {
+    verifyJobId = id;
+    stopVerifyPoll();
+    verifyPollTimer = window.setInterval(pollVerifyJob, 1000);
+    pollVerifyJob();
+  }
+
+  async function loadVerifyAgents() {
+    if (!SERVED || !verifyBtn) return;
+    try {
+      var res = await fetch(apiUrl("/providers"));
+      var body = await res.json();
+      var list = Array.isArray(body.providers) ? body.providers : [];
+      var cliOnly = list.filter(function (id) {
+        return id !== "demo" && id !== "openai" && id !== "anthropic";
+      });
+      var agentBox = document.getElementById("verify-agents");
+      if (agentBox) {
+        agentBox.innerHTML = "";
+        var source = cliOnly.length ? cliOnly : list;
+        source.forEach(function (id, idx) {
+          var label = document.createElement("label");
+          var box = document.createElement("input");
+          box.type = "checkbox";
+          box.name = "verify-agent";
+          box.value = id;
+          box.checked = idx === 0;
+          label.appendChild(box);
+          label.appendChild(document.createTextNode(" " + id));
+          agentBox.appendChild(label);
+        });
+      }
+      verifyBtn.disabled = verifying || !sourceHasAgents(cliOnly.length ? cliOnly : list);
+    } catch (e) {
+      verifyBtn.disabled = true;
+    }
+  }
+
+  function sourceHasAgents(list) {
+    return Array.isArray(list) && list.length > 0;
+  }
+
+  async function attachActiveVerify() {
+    if (!SERVED) return;
+    try {
+      var res = await fetch(apiUrl("/verify/active"));
+      var body = await res.json();
+      if (body && body.job) {
+        renderVerifyJob(body.job);
+        if (body.job.status === "running") {
+          setVerifyUiRunning(true);
+          startVerifyPoll(body.job.id);
+        }
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  async function verifyAuthorUpdates() {
+    if (!SERVED || verifying) return;
+    var agents = selectedVerifyAgents();
+    if (!agents.length) {
+      showFlash("Pick at least one agent for verify");
+      return;
+    }
+    setVerifyUiRunning(true);
+    lastVerifyLogCount = 0;
+    if (verifyStatus) {
+      verifyStatus.hidden = false;
+      verifyStatus.className = "verify-status running";
+      verifyStatus.textContent = "Starting verify with " + agents.join(", ") + "…";
+    }
+    if (verifyLive) {
+      verifyLive.hidden = false;
+      verifyLive.textContent = "Starting…";
+    }
+    if (verifyLogs) verifyLogs.textContent = "";
+    try {
+      var res = await fetch(apiUrl("/verify"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providers: agents }),
+      });
+      var body = await res.json();
+      if (res.status === 409 && body.jobId) {
+        showFlash("Already verifying — showing live progress");
+        startVerifyPoll(body.jobId);
+        if (body.job) renderVerifyJob(body.job);
+        return;
+      }
+      if (!res.ok) throw new Error(body.error || "Verify failed to start");
+      var jobId = body.jobId || (body.job && body.job.id);
+      if (!jobId) throw new Error("Verify job did not return an id");
+      if (body.job) renderVerifyJob(body.job);
+      startVerifyPoll(jobId);
+    } catch (e) {
+      setVerifyUiRunning(false);
+      showFlash(e && e.message ? e.message : "Verify failed");
+      if (verifyStatus) {
+        verifyStatus.hidden = false;
+        verifyStatus.className = "verify-status error";
+        verifyStatus.textContent = e && e.message ? e.message : "Verify failed";
+      }
+    }
+  }
+
+  if (verifyBtn) verifyBtn.addEventListener("click", verifyAuthorUpdates);
+  loadVerifyAgents();
+  attachActiveVerify();
 
   document.querySelectorAll("[data-copy]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -584,13 +885,13 @@ function clientScript(prNumber: number): string {
       try {
         await navigator.clipboard.writeText(text);
         target.classList.add("copied");
-        const label = target.getAttribute("data-label") || "Copy for agent";
+        const label = target.getAttribute("data-label") || "Copy fix brief";
         setBtnLabel(target, "Copied");
         setTimeout(() => {
           target.classList.remove("copied");
           setBtnLabel(target, label);
         }, 1200);
-        showFlash("Copied finding for another agent");
+        showFlash("Copied fix brief — paste into your coding agent");
       } catch {
         setBtnLabel(target, "Copy failed");
       }
@@ -611,9 +912,13 @@ function clientScript(prNumber: number): string {
 }
 
 export function renderFinalReviewHtml(run: ReviewRun): string {
-  const issues = run.findings.filter((f) => f.kind !== "praise");
-  const praise = run.findings.filter((f) => f.kind === "praise");
+  const openFindings = run.findings.filter((f) => isFindingOpen(f));
+  const fixedFindings = run.findings.filter((f) => f.disposition === "fixed");
+  const issues = openFindings.filter((f) => f.kind !== "praise");
+  const praise = openFindings.filter((f) => f.kind === "praise");
   const judge = run.judge;
+  const fixBriefMd = buildReviewFixBriefMarkdown(run);
+  const fixBriefFilename = reviewFixBriefFilename(run.prNumber);
 
   const link = {
     ...(run.prUrl !== undefined ? { prUrl: run.prUrl } : {}),
@@ -623,6 +928,9 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
     ...issues.map((f, i) => cardHtml(f, i + 1, run.prNumber, link)),
     ...praise.map((f, i) => cardHtml(f, i + 1, run.prNumber, link)),
   ].join("\n");
+  const fixedCards = fixedFindings
+    .map((f, i) => cardHtml(f, i + 1, run.prNumber, link))
+    .join("\n");
 
   return `<!doctype html>
 <html lang="en">
@@ -721,10 +1029,29 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
     .card-header {
       display: flex;
       justify-content: space-between;
-      gap: 1rem;
+      gap: 0.75rem;
       align-items: flex-start;
+      flex-wrap: wrap;
     }
-    .card-actions { display: flex; gap: 0.4rem; flex-shrink: 0; }
+    .card-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      flex: 1 1 auto;
+      justify-content: flex-end;
+      min-width: 0;
+      max-width: 100%;
+    }
+    .card-actions button {
+      flex: 0 1 auto;
+      white-space: nowrap;
+    }
+    @media (max-width: 720px) {
+      .card-actions {
+        justify-content: flex-start;
+        width: 100%;
+      }
+    }
     .meta { margin: 0; color: var(--muted); font-size: 0.9rem; }
     .meta a.file-link { color: var(--accent); text-decoration: none; }
     .meta a.file-link:hover { color: var(--accent-hover); text-decoration: underline; }
@@ -875,6 +1202,11 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
     }
 
     .copy-row { margin: 0.35rem 0 0.5rem; }
+    .export-row {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      margin: 0.75rem 0 0;
+    }
+    .export-row .hint { flex: 1 1 220px; }
     button {
       border: 1px solid transparent;
       background: var(--accent);
@@ -916,6 +1248,23 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
     }
     ul.views { list-style: none; padding-left: 0; }
     ul.views li { margin: 0.35rem 0; }
+    .external-match {
+      margin: 0.6rem 0;
+      padding: 0.5rem 0.7rem;
+      border: 1px solid #6b5a1f;
+      background: #241f10;
+      border-radius: 6px;
+    }
+    .external-match-badge {
+      margin: 0 0 0.3rem;
+      color: #e0c46a;
+      font-weight: 600;
+      font-size: 0.85rem;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .external-match p { margin: 0.25rem 0; }
     .agents { margin-top: 0; }
     .agents a { color: var(--accent); }
     .agent-findings-nav {
@@ -933,6 +1282,43 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
     .agent-findings-nav a { color: var(--accent); display: inline-flex; align-items: center; gap: 6px; }
     ${workspaceChromeCss()}
     .section-title { margin-top: 2rem; }
+    .verify-row {
+      margin-top: 1rem;
+      padding-top: 0.85rem;
+      border-top: 1px solid var(--line);
+      display: grid;
+      gap: 0.55rem;
+    }
+    .verify-agents {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem 0.85rem;
+    }
+    .verify-agents label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      font-size: 0.85rem;
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .verify-panel { margin: 0; }
+    .verify-status { margin: 0 0 0.35rem; font-weight: 600; }
+    .verify-status.running { color: var(--major); }
+    .verify-status.done { color: #9cdcfe; }
+    .verify-status.error { color: var(--blocker); }
+    .verify-logs {
+      margin: 0;
+      max-height: 10rem;
+      overflow: auto;
+      padding: 0.55rem 0.7rem;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--code-bg);
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 0.72rem;
+      white-space: pre-wrap;
+    }
   </style>
 </head>
 <body class="wb-page">
@@ -954,23 +1340,47 @@ export function renderFinalReviewHtml(run: ReviewRun): string {
         <li>Questions: ${judge?.counts.question ?? 0}</li>
       </ul>
       <div class="progress">
-        <span>Open: <strong id="open-count">${issues.length + praise.length}</strong></span>
-        <span>Resolved: <strong id="resolved-count">0</strong></span>
-        <span class="hint" style="margin:0">Resolved state + your comments stay in this browser.</span>
+        <span class="has-tip" ${tip(Help.listOpen)}>Open: <strong id="open-count">${issues.length + praise.length}</strong></span>
+        <span class="has-tip" ${tip(Help.listBrowserResolved)}>Resolved: <strong id="resolved-count">0</strong></span>
+        <span class="hint" style="margin:0">Browser Resolved is local; Verify fixed updates disk.</span>
+      </div>
+      <div class="export-row">
+        <button type="button" class="has-ico" id="btn-copy-all-fix" ${tip(Help.copyAllFix)}>${iconTextHtml("clipboard", "Copy all open for agent")}</button>
+        <button type="button" class="btn-secondary has-ico" id="btn-download-fix" ${tip(Help.downloadFix)}>${iconTextHtml("download", "Download .md")}</button>
+        <span class="hint" style="margin:0">Paste into Cursor / Claude / Command Code to verify and fix on your branch.</span>
+      </div>
+      <div class="verify-row">
+        <p class="hint" style="margin:0">Verify <strong>all open findings</strong> after the author pushed or replied. Pick agents, then run. Triage’s Verify checks only the card on screen.</p>
+        <div class="verify-agents" id="verify-agents" aria-label="Agents for verify" ${tip(Help.verifyAgents)}></div>
+        <button type="button" class="has-ico" id="btn-verify" disabled ${tip(Help.verifyAllBtn)}>${iconTextHtml("shield-check", "Verify all open findings")}</button>
+        <section id="verify-panel" class="verify-panel" hidden>
+          <p id="verify-status" class="verify-status"></p>
+          <p id="verify-live" class="hint" hidden></p>
+          <pre id="verify-logs" class="verify-logs" aria-live="polite"></pre>
+        </section>
       </div>
       <p id="flash" hidden></p>
     </section>
 
-    <h2 class="section-title">Open findings</h2>
+    <h2 class="section-title has-tip" ${tip(Help.listOpen)}>Open findings</h2>
     <div id="open-findings">
-      ${cards}
+      ${cards || `<p class="hint">No open findings.</p>`}
     </div>
 
-    <h2 id="resolved-heading" class="section-title" hidden>Resolved</h2>
+    ${
+      fixedFindings.length
+        ? `<h2 class="section-title has-tip" ${tip(Help.listFixed)}>Fixed by verify (${fixedFindings.length})</h2>
+    <div id="fixed-findings">
+      ${fixedCards}
+    </div>`
+        : ""
+    }
+
+    <h2 id="resolved-heading" class="section-title has-tip" hidden ${tip(Help.listBrowserResolved)}>Resolved (this browser)</h2>
     <div id="resolved-findings" hidden></div>
   </main>
   ${workspaceChromeCloseHtml()}
-  ${clientScript(run.prNumber)}
+  ${clientScript(run.prNumber, fixBriefMd, fixBriefFilename)}
 </body>
 </html>`;
 }

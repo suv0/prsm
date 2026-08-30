@@ -362,6 +362,7 @@ export async function versionCompletedReview(options: {
   agent?: string;
   diffText?: string;
   keepPasses?: boolean;
+  log?: (line: string) => void;
   render: (
     run: ReviewRun,
     outputDir: string,
@@ -373,6 +374,7 @@ export async function versionCompletedReview(options: {
   agent: string;
   runCount: number;
   mergedFindingCount: number;
+  reconcile?: { dropped: number; carried: number; matched: number };
 }> {
   const agent = resolveAgentName(options.agent ?? options.run.agent);
   // Caller should archiveLegacyTopLevelIfNeeded *before* overwriting top-level.
@@ -403,6 +405,7 @@ export async function versionCompletedReview(options: {
     render: options.render,
     baseRun: options.run,
     ...(options.diffText !== undefined ? { diffText: options.diffText } : {}),
+    ...(options.log ? { log: options.log } : {}),
   });
 
   return {
@@ -410,6 +413,7 @@ export async function versionCompletedReview(options: {
     agent,
     runCount: merged.runCount,
     mergedFindingCount: merged.findingCount,
+    ...(merged.reconcile ? { reconcile: merged.reconcile } : {}),
   };
 }
 

@@ -1,10 +1,12 @@
 import { iconHtml } from "./ui-icons.js";
+import { Help, tip, uiHelpCss } from "./ui-help.js";
 
 /** Viewport width (px) at which the sidebar auto-collapses to icons. */
 export const SIDEBAR_COLLAPSE_MQ = "(max-width: 960px)";
 
 export function sidebarChromeCss(): string {
   return `
+    ${uiHelpCss()}
     :root {
       --sidebar-width: 260px;
       --sidebar-rail: 64px;
@@ -231,7 +233,7 @@ export function workspaceChromeHeadHtml(): string {
 }
 
 export function sidebarToggleButtonHtml(): string {
-  return `<button type="button" class="sidebar-toggle" id="sidebar-toggle" aria-controls="hub-sidebar" aria-expanded="true" title="Collapse sidebar" aria-label="Collapse sidebar">
+  return `<button type="button" class="sidebar-toggle" id="sidebar-toggle" aria-controls="hub-sidebar" aria-expanded="true" ${tip(Help.sidebarToggle)} aria-label="Collapse sidebar">
         ${iconHtml("panel-close", "ico-collapse")}
         ${iconHtml("panel-open", "ico-expand")}
         <span class="nav-label">Collapse</span>

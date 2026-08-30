@@ -9,7 +9,9 @@ import {
   isFatalProviderError,
   matchFindingsToThreads,
   parseBatchVerifyModelResponse,
+  queueSnapshotFromRun,
   rollupVerifications,
+  syncDispositionsFromVerifications,
   toFindingVerification,
   type VerifyThread,
 } from "@review-os/core";
@@ -280,6 +282,8 @@ export async function runVerifyAuthorUpdates(options: {
   /** @deprecated Prefer providerIds */
   providerId?: string;
   providerIds?: string[];
+  /** When set, only these finding ids are verified (triage: current card). */
+  findingIds?: string[];
   log?: LogFn;
   onProgress?: (progress: VerifyProgress) => void;
 }): Promise<{ report: VerifyReport; outputDir: string }> {
@@ -329,10 +333,32 @@ export async function runVerifyAuthorUpdates(options: {
   await writeFile(path.join(options.outputDir, "diff.patch"), pr.diff, "utf8");
 
   const threads = threadBundle.threads as VerifyThread[];
+  const idFilter =
+    options.findingIds && options.findingIds.length > 0
+      ? new Set(options.findingIds)
+      : null;
+  const openFindings = run.findings.filter((f) => {
+    if ((f.disposition ?? "open") !== "open") return false;
+    if (f.verification?.status === "resolved" || f.verification?.status === "accepted") {
+      return false;
+    }
+    if (idFilter && !idFilter.has(f.id)) return false;
+    return true;
+  });
+  if (idFilter && openFindings.length === 0) {
+    throw new Error(
+      "No open finding matched the requested id(s). Pick an open card and try again.",
+    );
+  }
   const { pairs, unmatchedThreads } = matchFindingsToThreads(
-    run.findings,
+    openFindings,
     threads,
   );
+  if (idFilter) {
+    log(
+      `Scoped verify: ${pairs.length} finding(s) (current card only)`,
+    );
+  }
   const batchCount = Math.max(1, Math.ceil(pairs.length / BATCH_SIZE));
   const totalSteps = providerIds.length * batchCount;
   let finishedSteps = 0;
@@ -431,21 +457,27 @@ export async function runVerifyAuthorUpdates(options: {
     };
   });
 
+  const nextRun = syncDispositionsFromVerifications(
+    applyVerificationsToRun(
+      {
+        ...run,
+        prUrl: run.prUrl ?? pr.url,
+        title: run.title ?? pr.title,
+      },
+      byId,
+    ),
+  );
+
+  /** Triage passes findingIds; List / CLI without filter = all open. */
+  const scope = idFilter ? ("finding" as const) : ("all" as const);
   const report = buildVerifyReport({
-    run: { ...run, prUrl: run.prUrl ?? pr.url, title: run.title ?? pr.title },
+    run: nextRun,
     providers: providerIds,
     items,
     unmatchedThreads,
+    scope,
+    queue: queueSnapshotFromRun(nextRun),
   });
-
-  const nextRun = applyVerificationsToRun(
-    {
-      ...run,
-      prUrl: run.prUrl ?? pr.url,
-      title: run.title ?? pr.title,
-    },
-    byId,
-  );
 
   await writeFile(
     path.join(options.outputDir, "run.json"),
@@ -465,8 +497,13 @@ export async function runVerifyAuthorUpdates(options: {
   await renderReviewFromDir(options.outputDir);
 
   log(
-    `Done · agents ${providerIds.join("+")} · resolved ${report.counts.resolved} · accepted ${report.counts.accepted} · needs_look ${report.counts.needs_look} · still_open ${report.counts.still_open}`,
+    `Done · scope ${report.scope} · checked ${report.checkedCount ?? items.length} · agents ${providerIds.join("+")} · this job resolved ${report.counts.resolved} · accepted ${report.counts.accepted} · needs_look ${report.counts.needs_look} · still_open ${report.counts.still_open}`,
   );
+  if (report.queue) {
+    log(
+      `Queue after verify · open ${report.queue.open} · fixed ${report.queue.fixed} · false alarms ${report.queue.falseAlarm}`,
+    );
+  }
   log(`Report: ${path.join(options.outputDir, "verify-report.html")}`);
 
   return { report, outputDir: options.outputDir };
