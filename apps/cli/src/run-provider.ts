@@ -131,7 +131,7 @@ export async function runWithProvider(options: {
       .filter((id) => id !== "demo")
       .join(" | ");
     throw new Error(
-      `Unknown provider "${options.providerId}". Use: ${known || "cursor | claude-code | command-code"}`,
+      `Unknown provider "${options.providerId}". Use: ${known || "cursor | claude-code | command-code | codex"}`,
     );
   }
 

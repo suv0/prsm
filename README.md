@@ -70,13 +70,14 @@ pnpm pm2:stop      # stop it (pnpm pm2:delete to remove it from pm2's list)
 2. **New Review** — paste a GitHub PR URL → pick agents → edit **Review instructions** if you want → **Run Review** (the job loads the PR when it starts; private repos need Settings → Connect GitHub)  
 3. Watch **Live run**, then **Home** → **Triage**
 
-Install **any one** agent (you do not need all three):
+Install **any one** agent (you do not need all four):
 
 | Agent | CLI | Install | Login |
 |---|---|---|---|
 | Cursor Agent | `agent` | https://cursor.com/docs/cli/overview | `agent login` or `CURSOR_API_KEY` |
 | Claude Code | `claude` | https://docs.anthropic.com/en/docs/claude-code | Claude Code / Anthropic login |
 | Command Code | `command-code` | https://commandcode.ai/ | Command Code onboarding |
+| Codex | `codex` | https://developers.openai.com/codex/cli | `codex login` or `OPENAI_API_KEY` |
 | Anything else | whatever is on PATH | hub → **Add your own agent** | that CLI’s login |
 
 Custom CLIs and GitHub tokens are saved in `~/.prsm/` on this machine only.
@@ -156,6 +157,7 @@ pnpm prsm --run https://github.com/org/repo/pull/123
 pnpm prsm --provider cursor https://github.com/org/repo/pull/123
 pnpm prsm --provider claude-code https://github.com/org/repo/pull/123
 pnpm prsm --provider command-code https://github.com/org/repo/pull/123
+pnpm prsm --provider codex https://github.com/org/repo/pull/123
 ```
 
 `--run` uses every **available** local CLI agent in parallel.
@@ -181,6 +183,7 @@ PRism does **not** ship a model. Details: [docs/providers.md](docs/providers.md)
 | `cursor` | `agent` | `agent login` or `CURSOR_API_KEY` |
 | `claude-code` | `claude` | Claude Code / Anthropic login |
 | `command-code` | `command-code` | Command Code login |
+| `codex` | `codex` | `codex login` or `OPENAI_API_KEY` |
 | *(your id)* | any CLI on PATH | hub → **Add your own agent** |
 | `anthropic` | HTTP API | `ANTHROPIC_API_KEY` (optional; not the default path) |
 | `demo` | fixtures | none |
@@ -250,7 +253,7 @@ reviews/<n>/
 apps/cli/           # prsm CLI + hub + triage
 packages/
   core/             # pipeline, finalize, merge, reverify, verify  (@review-os/core)
-  providers/        # cursor / claude-code / command-code / custom CLIs
+  providers/        # cursor / claude-code / command-code / codex / custom CLIs
   github/           # PR fetch (GitHub API; gh optional)
   render/           # HTML / markdown / triage
   schemas/          # shared Zod types

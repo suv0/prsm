@@ -55,6 +55,20 @@ export const AGENT_CATALOG: AgentCatalogEntry[] = [
     ],
     loginHint: "command-code login",
   },
+  {
+    id: "codex",
+    name: "Codex",
+    command: "codex",
+    summary: "OpenAI’s Codex CLI — headless review via `codex exec`.",
+    installUrl: "https://developers.openai.com/codex/cli",
+    docsUrl: "https://github.com/openai/codex",
+    setupSteps: [
+      "Install the Codex CLI (`codex`) from OpenAI's docs",
+      "Run `codex login` (or set OPENAI_API_KEY)",
+      "Confirm with `codex --version`",
+    ],
+    loginHint: "codex login",
+  },
 ];
 
 export type AgentStatus = AgentCatalogEntry & {

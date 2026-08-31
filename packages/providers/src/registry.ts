@@ -4,6 +4,7 @@ import { ClaudeCodeProvider } from "./claude-code.js";
 import {
   GenericCliProvider,
   RESERVED_PROVIDER_IDS,
+  resolveCliSpec,
   type CliAgentSpec,
 } from "./cli-agents.js";
 import { CommandCodeProvider } from "./command-code.js";
@@ -15,12 +16,14 @@ export type ProviderId =
   | "anthropic"
   | "claude-code"
   | "command-code"
-  | "cursor";
+  | "cursor"
+  | "codex";
 
 const CLI_PROVIDER_ORDER: ProviderId[] = [
   "cursor",
   "claude-code",
   "command-code",
+  "codex",
 ];
 
 export function createProviderRegistry(
@@ -32,6 +35,7 @@ export function createProviderRegistry(
     ["claude-code", new ClaudeCodeProvider()],
     ["command-code", new CommandCodeProvider()],
     ["cursor", new CursorAgentProvider()],
+    ["codex", new GenericCliProvider(resolveCliSpec("codex"))],
   ]);
   for (const spec of extras) {
     if (!spec?.id || RESERVED_PROVIDER_IDS.has(spec.id)) continue;

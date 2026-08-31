@@ -49,6 +49,7 @@ export const RESERVED_PROVIDER_IDS = new Set([
   "cursor",
   "claude-code",
   "command-code",
+  "codex",
 ]);
 
 export const BUILTIN_CLI_SPECS: CliAgentSpec[] = [
@@ -111,6 +112,19 @@ export const BUILTIN_CLI_SPECS: CliAgentSpec[] = [
       CI: "1",
       NO_COLOR: "1",
     },
+  },
+  {
+    id: "codex",
+    name: "Codex",
+    command: "codex",
+    // `codex exec` is the headless subcommand and already defaults approval to
+    // "never" — no extra flag needed. `-p` / `--profile` picks a config profile
+    // here, not a prompt, so unlike the other three CLIs the prompt is a plain
+    // trailing argument (stdin stays closed; codex would otherwise block reading
+    // it as extra input). --sandbox read-only matches "ask mode" on Cursor: the
+    // pass can read but never write.
+    extraArgs: ["exec", "--sandbox", "read-only", "--color", "never"],
+    promptStyle: "trailing",
   },
 ];
 

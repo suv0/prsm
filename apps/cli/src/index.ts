@@ -57,6 +57,7 @@ CLI auto-run with local agent tools (no PRism API key):
   pnpm prsm --provider cursor <url>
   pnpm prsm --provider claude-code <url>
   pnpm prsm --provider command-code <url>
+  pnpm prsm --provider codex <url>
   pnpm prsm --provider anthropic <url>   # needs ANTHROPIC_API_KEY
   pnpm prsm --provider <your-cli-id> <url>  # hub → Add your own agent
 

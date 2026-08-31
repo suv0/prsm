@@ -24,7 +24,7 @@ test("slugAgentId lowercases and strips junk", () => {
 });
 
 test("reserved provider ids stay blocked", () => {
-  for (const id of ["cursor", "claude-code", "command-code", "demo", "anthropic"]) {
+  for (const id of ["cursor", "claude-code", "command-code", "codex", "demo", "anthropic"]) {
     assert.equal(RESERVED_PROVIDER_IDS.has(id), true);
   }
 });
@@ -119,8 +119,24 @@ test("claude-code pipes prompt on stdin with flags before bare -p", () => {
   assert.equal(execOptionsForSpec(spec, "do the review").stdin, "do the review");
 });
 
+test("codex takes the prompt as a trailing argument, not -p (that's --profile on the real CLI)", () => {
+  const spec = resolveCliSpec("codex");
+  assert.equal(spec.promptStyle, "trailing");
+  assert.equal(spec.promptViaStdin, undefined);
+  const args = buildCliArgs(spec, "do the review", "/repo");
+  assert.deepEqual(args, [
+    "exec",
+    "--sandbox",
+    "read-only",
+    "--color",
+    "never",
+    "do the review",
+  ]);
+  assert.equal(execOptionsForSpec(spec, "do the review").stdin, undefined);
+});
+
 test("other built-ins do not opt into NDJSON collection", () => {
-  for (const id of ["cursor", "claude-code"]) {
+  for (const id of ["cursor", "claude-code", "codex"]) {
     const spec = resolveCliSpec(id);
     assert.equal(spec.ndjsonEvents, undefined);
     assert.equal(execOptionsForSpec(spec, "x").ndjsonEvents, undefined);
@@ -133,34 +149,38 @@ test("addCustomAgent persists under PRSM_HOME and rejects reserved names", async
   process.env.PRSM_HOME = dir;
   try {
     const saved = await addCustomAgent({
-      name: "Codex",
-      command: "codex",
+      name: "Widget CLI",
+      command: "widget-cli",
       extraFlags: "--output-format text",
     });
-    assert.equal(saved.id, "codex");
+    assert.equal(saved.id, "widget-cli");
     assert.deepEqual(saved.extraArgs, ["--output-format", "text"]);
     const listed = await loadCustomAgents();
     assert.equal(listed.length, 1);
     const raw = JSON.parse(
       await readFile(path.join(dir, "custom-agents.json"), "utf8"),
     );
-    assert.equal(raw.agents[0].command, "codex");
+    assert.equal(raw.agents[0].command, "widget-cli");
 
     await assert.rejects(
       () => addCustomAgent({ name: "Cursor", command: "agent" }),
       /built-in/i,
     );
     await assert.rejects(
+      () => addCustomAgent({ name: "Codex", command: "codex" }),
+      /built-in/i,
+    );
+    await assert.rejects(
       () =>
         addCustomAgent({
           name: "evil",
-          command: "codex",
+          command: "widget-cli",
           extraFlags: "; rm -rf /",
         }),
       /unsafe extra flag/i,
     );
 
-    assert.equal(await removeCustomAgent("codex"), true);
+    assert.equal(await removeCustomAgent("widget-cli"), true);
     assert.equal((await loadCustomAgents()).length, 0);
   } finally {
     if (prev === undefined) delete process.env.PRSM_HOME;
