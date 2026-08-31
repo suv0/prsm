@@ -18,6 +18,8 @@ pnpm install
 pnpm prsm                 # hub at http://127.0.0.1:8788/
 ```
 
+Prefer the hub running in the background instead of an open terminal? `pnpm pm2:start` runs it under pm2 (`pnpm pm2:status` / `pnpm pm2:logs` / `pnpm pm2:stop`) — see README "Quick start".
+
 You only need **one** CLI: a built-in **or** hub → **Add your own agent**.
 
 Public PRs need no GitHub login. Private: hub → **Connect GitHub** (token) or `gh auth login`.

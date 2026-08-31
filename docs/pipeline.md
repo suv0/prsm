@@ -22,6 +22,15 @@ This rebuild happens **when each agent finishes**, not only at the end. You can 
 
 **Verify** — Triage **Verify this finding** checks the current card only; List **Verify all open findings** checks every open card. Rollup `resolved` / `accepted` sets `disposition: fixed` (Fixed) and removes the card from the open queue (not a false alarm). The **Report** tab (`verify-report.html`) is the last job only: scope (`finding` \| `all`), this-job verdicts, and a cumulative Open / Fixed / False alarms snapshot after apply — not a second source of truth for the queue.
 
+## Finding kinds
+
+`issue` (the default), `question` (can't be proven from the diff), and `praise`. Praise is
+deliberately rare: the shared output contract (`buildReviewUserPrompt`) tells every pass to
+default to silence and only emit it for something objectively excellent (confidence ≥ 0.9,
+a concrete reason — algorithmic complexity, precise naming, real edge-case coverage — not
+"clean code"), capped at one per pass. Praise cards render alongside issues in the final
+report but are excluded from the triage queue (nothing to act on).
+
 Markdown/HTML are render-only. `findings.json` / `run.json` are the source of truth.
 
 Hands-off: `pnpm prsm --run <url>` or the hub **Run review** button (`pnpm prsm`).  

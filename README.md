@@ -55,6 +55,17 @@ pnpm prsm
 
 That last command installs/builds if needed, starts the hub, and opens **http://127.0.0.1:8788/**
 
+Want the hub running in the background instead of a terminal you have to keep open? Run it under
+[pm2](https://pm2.keymetrics.io/) (installed as a dev dependency):
+
+```bash
+pnpm pm2:start     # builds, then daemonizes the hub — closing the terminal is fine
+pnpm pm2:status    # is it up?
+pnpm pm2:logs      # tail its output
+pnpm pm2:restart   # rebuild + restart after pulling changes
+pnpm pm2:stop      # stop it (pnpm pm2:delete to remove it from pm2's list)
+```
+
 1. **Settings** — **GitHub access** (skip for public PRs; paste a token for private repos) and **AI agents** (Re-check a built-in, or **Add your own agent**)  
 2. **New Review** — paste a GitHub PR URL → pick agents → edit **Review instructions** if you want → **Run Review** (the job loads the PR when it starts; private repos need Settings → Connect GitHub)  
 3. Watch **Live run**, then **Home** → **Triage**
@@ -201,6 +212,7 @@ reviews/<n>/
 | Goal | Command |
 |---|---|
 | Hub UI | `pnpm prsm` (opens http://127.0.0.1:8788/) |
+| Hub UI, backgrounded (no open terminal needed) | `pnpm pm2:start` |
 | Setup check | `pnpm prsm --doctor` |
 | List agent CLIs | `pnpm prsm --list-providers` |
 | Hands-off multi-agent | `pnpm prsm --run <url>` |

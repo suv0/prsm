@@ -12,9 +12,18 @@
     "prsm": "node scripts/prsm.mjs",
     "review-pr": "node scripts/prsm.mjs",
     "test": "node --test tests/**/*.test.mjs",
-    "typecheck": "pnpm -r run typecheck"
+    "typecheck": "pnpm -r run typecheck",
+    "pm2:start": "pnpm build && pm2 start ecosystem.config.cjs",
+    "pm2:stop": "pm2 stop prsm",
+    "pm2:restart": "pnpm build && pm2 restart prsm",
+    "pm2:delete": "pm2 delete prsm",
+    "pm2:logs": "pm2 logs prsm",
+    "pm2:status": "pm2 status prsm"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "pm2": "^7.0.4"
   }
 }

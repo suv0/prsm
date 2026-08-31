@@ -18,6 +18,9 @@ verify whether claimed behavior follows from the code and related call sites.
 Prefer questions when you cannot prove the bug yet.
 Do not invent issues without an evidence anchor.
 Keep `issueSimple` and `reviewComment` in plain teammate English (short, no lecture tone).
+If (and only if) you see a guardrail against exactly the kind of future pain you're hunting
+for — genuinely exceptional, not just present — note it as `kind: praise` per the output
+contract's bar.
 
 ## Documented intent (important)
 

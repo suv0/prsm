@@ -17,7 +17,7 @@ Look for:
 
 Be harsh in analysis. Keep `reviewComment` polite, short, and teammate-like (“Could we…?”).
 Write `issueSimple` as one plain sentence — what hurts maintainability, not jargon.
-Also note genuine positives as `kind: praise`.
+If (and only if) you see naming or structure that is genuinely exceptional — not just fine — note it as `kind: praise` per the output contract's bar.
 
 ## Naming & meaning (important)
 

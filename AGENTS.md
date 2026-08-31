@@ -12,6 +12,8 @@ pnpm prsm
 
 Open http://127.0.0.1:8788/ → **Settings** (Connect GitHub; public PRs skip this) → agents or **Add your own agent** → **New Review** with a PR URL. AI CLIs are not vendored in this repo.
 
+Don't want a terminal open to keep the hub alive? `pnpm pm2:start` runs it under [pm2](https://pm2.keymetrics.io/) instead (see README "Quick start").
+
 ## Chat command
 
 ```text
