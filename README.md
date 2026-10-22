@@ -1,6 +1,21 @@
-# PRism
+<div align="center">
 
-**See every angle before you merge.**
+<img src="https://capsule-render.vercel.app/api?type=waving&height=200&color=0:121414,100:0B4F6C&text=PRism&fontColor=ffffff&fontSize=72&fontAlignY=36&desc=See%20every%20angle%20before%20you%20merge&descSize=20&descAlignY=58&animation=fadeIn" width="100%" alt="PRism"/>
+
+[![What PRism does](https://readme-typing-svg.demolab.com?font=Fira+Code&size=20&pause=1100&color=4FC1FF&center=true&vCenter=true&width=640&lines=pnpm+prsm+%E2%86%92+paste+a+PR+link;Correctness+%C2%B7+Nitpick+%C2%B7+Devil%27s+advocate;One+triage+queue.+No+duplicates.;Never+posts+to+GitHub+for+you.)](#quick-start-clone--first-review)
+
+[![Node 20+](https://img.shields.io/badge/Node-20%2B-339933?style=for-the-badge&logo=nodedotjs&logoColor=white)](#requirements)
+[![Windows | macOS | Linux](https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Linux-local-0B4F6C?style=for-the-badge)](#requirements)
+[![No PRism API key](https://img.shields.io/badge/API%20key-none%20needed-22A06B?style=for-the-badge&logo=lock&logoColor=white)](#requirements)
+[![MIT](https://img.shields.io/badge/license-MIT-64748B?style=for-the-badge)](LICENSE)
+
+**Paste a PR link. Three review passes run side by side. Triage one finding at a time.**
+
+<img src="docs/demo.svg" width="760" alt="PRism in action: a GitHub PR link is pasted, correctness, nitpick and devil's advocate passes run in parallel, then one major finding is shown with a suggested comment to copy"/>
+
+</div>
+
+## PRism
 
 Local, multi-agent pull request reviews — harsh analysis, polite paste-ready GitHub comments.
 
